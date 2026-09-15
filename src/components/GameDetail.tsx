@@ -565,7 +565,15 @@ export function GameDetail({
             className={styles.sourceBadge}
           />
           {!game.isInstalled && <div className={styles.notInstalled}>Not installed</div>}
-          <h1 className={styles.title}>{game.name}</h1>
+          {/* Prefers the freshly-fetched IGDB name over `game.name` (from
+              the library snapshot) — otherwise a corrected match (e.g.
+              after retagging a ROM folder's platform, or hitting "refresh
+              metadata") shows the right description/cover immediately but
+              keeps displaying the old title until the whole library
+              snapshot happens to reload, which nothing here triggers on
+              its own. Mirrors the same preference the backend's own
+              `library_snapshot` already applies. */}
+          <h1 className={styles.title}>{metadata?.name || game.name}</h1>
 
           <div className={styles.metaRow}>
             {playtime && (

@@ -162,7 +162,36 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
             bios_relpath: Some("roms/neocdz.zip"),
             required_system_libs: &["libSDL2_image"],
         }],
+        Platform::WiiU => vec![cemu_emulator()],
         _ => Vec::new(),
+    }
+}
+
+/// Cemu — the only real option for Wii U (no libretro/EmulatorJS core comes
+/// anywhere close; RetroArch's sole PS2-style attempt at other consoles
+/// doesn't extend to Wii U at all). Identical on both platforms Wervik
+/// manages it on: only the download source/archive shape differs (see
+/// `managed_release_for`), not how it's actually launched.
+///
+/// `-g` and `-f` verified straight from Cemu's own
+/// `src/config/LaunchSettings.cpp` (`--game,-g` / `--fullscreen,-f`), not
+/// assumed. Portable mode isn't a launch flag at all — Cemu instead checks
+/// for a directory literally named `portable` next to its own executable
+/// (`CemuApp.cpp`'s `DeterminePaths`), which `install` creates once so its
+/// config/keys/mlc data stay inside Wervik's own managed directory instead
+/// of the user's system config folder.
+fn cemu_emulator() -> NativeEmulator {
+    NativeEmulator {
+        id: "cemu",
+        display_name: "Cemu",
+        launcher: Launcher::Managed,
+        recommended: true,
+        launch_args: &["-g", "{rom}", "-f"],
+        settings_args: &[],
+        // Not strictly required for every title the way a real BIOS is for
+        // PS1/PS2/Neo Geo CD — see `Platform::requires_bios`'s doc comment.
+        bios_relpath: Some("keys.txt"),
+        required_system_libs: &[],
     }
 }
 
@@ -307,6 +336,7 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
             bios_relpath: Some("bios/"),
             required_system_libs: &[],
         }],
+        Platform::WiiU => vec![cemu_emulator()],
     }
 }
 
@@ -399,6 +429,18 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
                 binary_name: "fbneo",
             },
         }),
+        // Cemu's official Linux release is an AppImage, same shape as
+        // DuckStation's above — `asset_name`'s `*` covers the version its
+        // real filename embeds (`Cemu-2.6-x86_64.AppImage`, verified
+        // against the real v2.6 release), which changes every release.
+        #[cfg(not(target_os = "windows"))]
+        "cemu" => Some(ManagedRelease {
+            source: DownloadSource::Github {
+                repo: "cemu-project/Cemu",
+                asset_name: "Cemu-*-x86_64.AppImage",
+            },
+            kind: ManagedKind::AppImage,
+        }),
         "retroarch-fbneo" => Some(ManagedRelease {
             source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
             kind: ManagedKind::RetroArch { core_name: "fbneo" },
@@ -452,6 +494,23 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             },
             kind: ManagedKind::SevenZipBinary {
                 binary_name: "pcsx2-qt.exe",
+            },
+        }),
+        // Cemu's official Windows release is a portable `.zip`, but unlike
+        // every other managed zip here, everything sits inside one
+        // version-named top-level folder (`Cemu_2.6/Cemu.exe`, verified
+        // against the real v2.6 asset) rather than at the archive root —
+        // `install`'s post-extraction flattening step (see
+        // `flatten_single_top_level_dir`) is what lets `binary_name` stay a
+        // plain, version-independent path.
+        #[cfg(target_os = "windows")]
+        "cemu" => Some(ManagedRelease {
+            source: DownloadSource::Github {
+                repo: "cemu-project/Cemu",
+                asset_name: "cemu-*-windows-x64.zip",
+            },
+            kind: ManagedKind::ZippedBinary {
+                binary_name: "Cemu.exe",
             },
         }),
         _ => None,
@@ -1060,6 +1119,7 @@ pub fn install(app_data_dir: &Path, platform: Platform, emulator_id: &str) -> Re
             let cursor = std::io::Cursor::new(bytes);
             let mut archive = zip::ZipArchive::new(cursor).map_err(|e| e.to_string())?;
             archive.extract(&extract_dir).map_err(|e| e.to_string())?;
+            flatten_single_top_level_dir(&extract_dir)?;
 
             make_executable(&extract_dir.join(binary_name))?;
         }
@@ -1071,6 +1131,7 @@ pub fn install(app_data_dir: &Path, platform: Platform, emulator_id: &str) -> Re
 
             sevenz_rust::decompress(std::io::Cursor::new(bytes), &extract_dir)
                 .map_err(|e| format!("Could not extract {}: {e}", emulator.display_name))?;
+            flatten_single_top_level_dir(&extract_dir)?;
 
             make_executable(&extract_dir.join(binary_name))?;
         }
@@ -1079,7 +1140,49 @@ pub fn install(app_data_dir: &Path, platform: Platform, emulator_id: &str) -> Re
         }
     }
 
+    // Cemu isn't a launch flag away from being self-contained the way
+    // PCSX2's `-portable` is — it instead checks for a directory literally
+    // named `portable` next to its own executable (see `cemu_emulator`'s
+    // doc comment) — so create it once here, the same way `-portable`
+    // being baked into `launch_args` does for PCSX2.
+    if emulator.id == "cemu" {
+        if let Some(exe_dir) = managed_executable_path(app_data_dir, emulator.id).parent() {
+            std::fs::create_dir_all(exe_dir.join("portable")).map_err(|e| e.to_string())?;
+        }
+    }
+
     Ok(())
+}
+
+/// If `dir` contains exactly one entry and that entry is itself a
+/// directory, moves that directory's contents up into `dir` and removes
+/// the now-empty wrapper. Cemu's official archives (both platforms) wrap
+/// everything in one version-named top-level folder (e.g. `Cemu_2.6/`) —
+/// this is what lets `ManagedKind::ZippedBinary`/`SevenZipBinary`'s
+/// `binary_name` stay a plain, version-independent path instead of one
+/// that breaks on every release. A no-op for an archive that's already
+/// flat at its root (every other managed release here, verified against
+/// FBNeo's and PCSX2's real archives, which both have several top-level
+/// entries — a binary alongside docs/license files — not one wrapping
+/// folder).
+fn flatten_single_top_level_dir(dir: &Path) -> Result<(), String> {
+    let mut entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    let Some(first) = entries.next() else {
+        return Ok(());
+    };
+    let first = first.map_err(|e| e.to_string())?;
+    if entries.next().is_some() {
+        return Ok(());
+    }
+    let wrapper = first.path();
+    if !wrapper.is_dir() {
+        return Ok(());
+    }
+    for inner in std::fs::read_dir(&wrapper).map_err(|e| e.to_string())? {
+        let inner = inner.map_err(|e| e.to_string())?;
+        std::fs::rename(inner.path(), dir.join(inner.file_name())).map_err(|e| e.to_string())?;
+    }
+    std::fs::remove_dir(&wrapper).map_err(|e| e.to_string())
 }
 
 /// Copies `bios_source` to wherever `emulator` expects its BIOS placed
@@ -1364,6 +1467,8 @@ mod tests {
         );
         assert_eq!(native_emulators_for(Platform::NeoGeoCd).len(), 1);
         assert_eq!(native_emulators_for(Platform::NeoGeoCd)[0].id, "fbneo");
+        assert_eq!(native_emulators_for(Platform::WiiU).len(), 1);
+        assert_eq!(native_emulators_for(Platform::WiiU)[0].id, "cemu");
         assert!(native_emulators_for(Platform::Snes).is_empty());
     }
 
@@ -1877,6 +1982,58 @@ mod tests {
         let err = install(&dir, Platform::Nintendo64, "not-a-real-emulator").unwrap_err();
         assert!(err.contains("not-a-real-emulator"));
     }
+
+    /// The exact real case this exists for: Cemu's own archive wraps
+    /// everything in one version-named folder.
+    #[test]
+    fn flatten_single_top_level_dir_hoists_a_lone_wrapper_folders_contents() {
+        let dir = scratch_dir("flatten-wrapper");
+        let wrapper = dir.join("Cemu_2.6");
+        std::fs::create_dir_all(&wrapper).unwrap();
+        std::fs::write(wrapper.join("Cemu.exe"), b"fake exe").unwrap();
+        std::fs::create_dir_all(wrapper.join("resources")).unwrap();
+
+        flatten_single_top_level_dir(&dir).unwrap();
+
+        assert!(dir.join("Cemu.exe").is_file());
+        assert!(dir.join("resources").is_dir());
+        assert!(!wrapper.exists(), "the now-empty wrapper must be removed");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FBNeo's and PCSX2's real archives both have several top-level
+    /// entries already (a binary alongside docs/license files) — must stay
+    /// untouched, not have one of them mistaken for a wrapper.
+    #[test]
+    fn flatten_single_top_level_dir_is_a_no_op_when_already_flat() {
+        let dir = scratch_dir("flatten-already-flat");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fbneo"), b"fake exe").unwrap();
+        std::fs::write(dir.join("README.txt"), b"docs").unwrap();
+
+        flatten_single_top_level_dir(&dir).unwrap();
+
+        assert!(dir.join("fbneo").is_file());
+        assert!(dir.join("README.txt").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A single top-level *file* (as opposed to a directory) is never a
+    /// wrapper to flatten — nothing to hoist out of it.
+    #[test]
+    fn flatten_single_top_level_dir_is_a_no_op_for_a_single_loose_file() {
+        let dir = scratch_dir("flatten-single-file");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gopher64"), b"fake exe").unwrap();
+
+        flatten_single_top_level_dir(&dir).unwrap();
+
+        assert!(dir.join("gopher64").is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
@@ -1974,6 +2131,30 @@ mod windows_tests {
         );
         assert_eq!(argv[0], executable.to_string_lossy());
         assert_eq!(&argv[1..], &["-portable", "-batch", "-fullscreen", r"D:\Games\Some Game.iso"]);
+    }
+
+    #[test]
+    fn builds_the_cemu_executable_path_and_cli_arguments() {
+        let app_data_dir = Path::new(r"C:\Users\tester\AppData\Roaming\Wervik");
+        let emulator = native_emulators_for(Platform::WiiU)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(emulator.id, "cemu");
+        assert!(emulator.recommended);
+
+        let executable = managed_executable_path(app_data_dir, emulator.id);
+        assert!(executable.ends_with(r"emulators\cemu-files\Cemu.exe"));
+
+        let argv = build_argv(
+            app_data_dir,
+            emulator,
+            Path::new(r"D:\Games\Some Game\code\game.rpx"),
+            app_data_dir,
+            "wii_u",
+        );
+        assert_eq!(argv[0], executable.to_string_lossy());
+        assert_eq!(&argv[1..], &["-g", r"D:\Games\Some Game\code\game.rpx", "-f"]);
     }
 
     #[test]

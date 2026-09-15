@@ -41,6 +41,7 @@ fn repo_for(platform: Platform) -> Option<&'static str> {
         Platform::PcEngine => "NEC_-_PC_Engine_-_TurboGrafx_16",
         Platform::ColecoVision => "Coleco_-_ColecoVision",
         Platform::PlayStation2 => "Sony_-_PlayStation_2",
+        Platform::WiiU => "Nintendo_-_Wii_U",
         Platform::Arcade | Platform::NeoGeoCd => return None,
     })
 }

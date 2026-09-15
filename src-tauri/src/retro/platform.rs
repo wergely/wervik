@@ -38,12 +38,13 @@ pub enum Platform {
     Arcade,
     NeoGeoCd,
     PlayStation2,
+    WiiU,
 }
 
 impl Platform {
     /// Every platform Wervik knows about, for UI listings (e.g. the
     /// Settings "Platforms" section) and exhaustiveness tests.
-    pub const ALL: [Platform; 22] = [
+    pub const ALL: [Platform; 23] = [
         Platform::Nes,
         Platform::Snes,
         Platform::GameBoy,
@@ -66,6 +67,7 @@ impl Platform {
         Platform::Arcade,
         Platform::NeoGeoCd,
         Platform::PlayStation2,
+        Platform::WiiU,
     ];
 
     /// A stable machine-readable key, independent of the JSON wire format
@@ -97,6 +99,7 @@ impl Platform {
             Platform::Arcade => "arcade",
             Platform::NeoGeoCd => "neo_geo_cd",
             Platform::PlayStation2 => "play_station_2",
+            Platform::WiiU => "wii_u",
         }
     }
 
@@ -132,6 +135,7 @@ impl Platform {
             Platform::Arcade => "Arcade",
             Platform::NeoGeoCd => "Neo Geo CD",
             Platform::PlayStation2 => "PlayStation 2",
+            Platform::WiiU => "Wii U",
         }
     }
 
@@ -160,6 +164,7 @@ impl Platform {
             Platform::Arcade => "Arcade",
             Platform::NeoGeoCd => "Neo Geo CD",
             Platform::PlayStation2 => "PS2",
+            Platform::WiiU => "Wii U",
         }
     }
 
@@ -189,17 +194,24 @@ impl Platform {
             Platform::NeoGeoPocket => "mednafen_ngp",
             Platform::PcEngine => "mednafen_pce",
             Platform::ColecoVision => "gearcoleco",
-            Platform::Arcade | Platform::NeoGeoCd | Platform::PlayStation2 => return None,
+            Platform::Arcade | Platform::NeoGeoCd | Platform::PlayStation2 | Platform::WiiU => return None,
         })
     }
 
     /// Whether this platform needs a user-supplied BIOS to boot at all, as
     /// opposed to systems where a BIOS is optional (e.g. just for a boot
     /// logo). Wervik never provides BIOS files itself — see `retro::bios`.
+    ///
+    /// Wii U is the one soft case: Cemu doesn't strictly need `keys.txt` to
+    /// boot every title (only ones with encrypted content), but Wervik
+    /// still gates on it here rather than adding a genuinely optional
+    /// third state to this otherwise-boolean check — simpler, and the
+    /// BIOS/keys setup UI this drives is the only place Wervik has to
+    /// offer configuring it at all.
     pub fn requires_bios(self) -> bool {
         matches!(
             self,
-            Platform::PlayStation | Platform::NeoGeoCd | Platform::PlayStation2
+            Platform::PlayStation | Platform::NeoGeoCd | Platform::PlayStation2 | Platform::WiiU
         )
     }
 
@@ -237,6 +249,7 @@ impl Platform {
             Platform::Arcade => &["Arcade"],
             Platform::NeoGeoCd => &["Neo Geo CD"],
             Platform::PlayStation2 => &["PlayStation 2"],
+            Platform::WiiU => &["Wii U"],
         }
     }
 
@@ -282,6 +295,12 @@ impl Platform {
             "ngp" | "ngc" => Some(Platform::NeoGeoPocket),
             "pce" => Some(Platform::PcEngine),
             "col" | "cv" => Some(Platform::ColecoVision),
+            // Wii U's own disc-dump/archive formats — unambiguous (no other
+            // supported platform uses any of these). A game whose own dump
+            // is a *directory* instead (the far more common case for a
+            // decrypted Wii U title) isn't reachable through this function
+            // at all; see `discovery::scan_tagged_directory`.
+            "wud" | "wux" | "wua" => Some(Platform::WiiU),
             _ => None,
         }
     }

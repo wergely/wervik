@@ -1291,7 +1291,14 @@ fn fetch_and_store_metadata(
         return Ok(None);
     };
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    state.metadata_cache.put(game_id, metadata.clone())?;
+    state.metadata_cache.put(game_id.clone(), metadata.clone())?;
+    // Same event the background sweep emits on a hit (`metadata::spawn_fetch`)
+    // — without it, nothing tells the frontend this game's cached metadata
+    // just changed, and `useLibrary`'s snapshot (in particular, whatever
+    // page already has this game's *old* name/cover loaded) never refreshes
+    // to reflect a corrected match (e.g. after "Refresh metadata" or
+    // retagging the ROM directory's platform).
+    let _ = state.app_handle.emit("metadata-updated", &game_id);
     Ok(Some(metadata))
 }
 
