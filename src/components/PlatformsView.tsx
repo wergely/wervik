@@ -12,7 +12,11 @@ export function PlatformsView({ onSelectPlatform }: PlatformsViewProps) {
   const [platforms, setPlatforms] = useState<PlatformStatus[] | null>(null);
 
   useEffect(() => {
-    getPlatformStatus().then((list) => setPlatforms(list.filter((p) => p.romCount > 0)));
+    getPlatformStatus().then((list) =>
+      setPlatforms(
+        [...list].sort((a, b) => b.romCount - a.romCount || a.displayName.localeCompare(b.displayName)),
+      ),
+    );
   }, []);
 
   return (
