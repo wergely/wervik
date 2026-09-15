@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   addRomDirectory,
   applyRetroArchAchievements,
+  applyPcsx2Achievements,
   getPlatformStatus,
   getRomDirectories,
   refreshAllMetadata,
@@ -213,42 +214,6 @@ function RetroAchievementsFields({
     onUpdateSettings({ raUsername: username.trim(), raApiKey: apiKey.trim() });
   }
 
-  const [nativePassword, setNativePassword] = useState("");
-  const [nativeHardcore, setNativeHardcore] = useState(false);
-  const [nativeBusy, setNativeBusy] = useState<"enable" | "disable" | null>(null);
-  const [nativeMessage, setNativeMessage] = useState<{ error: boolean; text: string } | null>(null);
-
-  async function handleEnableNative() {
-    if (!username.trim() || !nativePassword.trim()) {
-      setNativeMessage({ error: true, text: "Enter your username above and a password first." });
-      return;
-    }
-    setNativeBusy("enable");
-    setNativeMessage(null);
-    try {
-      await applyRetroArchAchievements(true, username.trim(), nativePassword, nativeHardcore);
-      setNativeMessage({ error: false, text: "Enabled — RetroArch will sign in the next time it launches." });
-      setNativePassword("");
-    } catch (error) {
-      setNativeMessage({ error: true, text: String(error) });
-    } finally {
-      setNativeBusy(null);
-    }
-  }
-
-  async function handleDisableNative() {
-    setNativeBusy("disable");
-    setNativeMessage(null);
-    try {
-      await applyRetroArchAchievements(false, "", "", false);
-      setNativeMessage({ error: false, text: "Disabled in RetroArch." });
-    } catch (error) {
-      setNativeMessage({ error: true, text: String(error) });
-    } finally {
-      setNativeBusy(null);
-    }
-  }
-
   return (
     <>
       <p className={styles.groupDescription}>
@@ -316,15 +281,81 @@ function RetroAchievementsFields({
         </button>
       </div>
 
+      <NativeAchievementsSection
+        title="Real achievements in RetroArch"
+        description="Arcade, CPS and Neo Geo games launch through Wervik's own managed RetroArch, which has a real RetroAchievements engine — unlock popups and hardcore mode included, unlike the viewer above. This sends your login straight into RetroArch's own config; Wervik never stores the password itself, and RetroArch replaces it with a session token as soon as it signs in."
+        username={username}
+        apply={applyRetroArchAchievements}
+      />
+      <NativeAchievementsSection
+        title="Real achievements in PCSX2"
+        description="PlayStation 2 games launch through Wervik's own managed PCSX2, which has the same real RetroAchievements engine. Unlike RetroArch, PCSX2 has no config field that logs itself in — Wervik performs that one-time login instead, and stores only the resulting session token (never your password) in PCSX2's own config."
+        username={username}
+        apply={applyPcsx2Achievements}
+      />
+    </>
+  );
+}
+
+/** The "sign in to a managed native emulator's own RetroAchievements
+ * engine" block — identical flow for RetroArch and PCSX2, just pointed at
+ * a different Tauri command (see `apply`), so shared here instead of
+ * duplicated per emulator. `username` is the one already entered above (in
+ * the read-only viewer's own fields), since it's the same RetroAchievements
+ * account either way. */
+function NativeAchievementsSection({
+  title,
+  description,
+  username,
+  apply,
+}: {
+  title: string;
+  description: string;
+  username: string;
+  apply: (enabled: boolean, username: string, password: string, hardcore: boolean) => Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [hardcore, setHardcore] = useState(false);
+  const [busy, setBusy] = useState<"enable" | "disable" | null>(null);
+  const [message, setMessage] = useState<{ error: boolean; text: string } | null>(null);
+
+  async function handleEnable() {
+    if (!username.trim() || !password.trim()) {
+      setMessage({ error: true, text: "Enter your username above and a password first." });
+      return;
+    }
+    setBusy("enable");
+    setMessage(null);
+    try {
+      await apply(true, username.trim(), password, hardcore);
+      setMessage({ error: false, text: "Enabled — it will sign in the next time it launches." });
+      setPassword("");
+    } catch (error) {
+      setMessage({ error: true, text: String(error) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDisable() {
+    setBusy("disable");
+    setMessage(null);
+    try {
+      await apply(false, "", "", false);
+      setMessage({ error: false, text: "Disabled." });
+    } catch (error) {
+      setMessage({ error: true, text: String(error) });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
       <p className={styles.groupTitle} style={{ marginTop: 28 }}>
-        Real achievements in RetroArch
+        {title}
       </p>
-      <p className={styles.groupDescription}>
-        Arcade, CPS and Neo Geo games launch through Wervik's own managed RetroArch, which has a real
-        RetroAchievements engine — unlock popups and hardcore mode included, unlike the viewer above. This sends
-        your login straight into RetroArch's own config; Wervik never stores the password itself, and RetroArch
-        replaces it with a session token as soon as it signs in.
-      </p>
+      <p className={styles.groupDescription}>{description}</p>
       <div className={styles.row}>
         <div>
           <div className={styles.rowLabel}>Password</div>
@@ -333,8 +364,8 @@ function RetroAchievementsFields({
         <input
           className={styles.textInput}
           type="password"
-          value={nativePassword}
-          onChange={(e) => setNativePassword(e.target.value)}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
           placeholder="Password"
           spellCheck={false}
           data-nav-item
@@ -347,15 +378,13 @@ function RetroAchievementsFields({
             Disables save states, rewind and cheats while playing — some achievements require it.
           </div>
         </div>
-        <Switch checked={nativeHardcore} onChange={setNativeHardcore} label="Hardcore mode" />
+        <Switch checked={hardcore} onChange={setHardcore} label="Hardcore mode" />
       </div>
       <div className={styles.row}>
         <div>
-          <div className={styles.rowLabel}>Apply to RetroArch</div>
-          {nativeMessage && (
-            <div className={nativeMessage.error ? styles.statusMessageError : styles.statusMessage}>
-              {nativeMessage.text}
-            </div>
+          <div className={styles.rowLabel}>Apply</div>
+          {message && (
+            <div className={message.error ? styles.statusMessageError : styles.statusMessage}>{message.text}</div>
           )}
         </div>
         <div className={styles.nativeActions}>
@@ -363,21 +392,21 @@ function RetroAchievementsFields({
             type="button"
             className={styles.rescanButton}
             data-nav-item
-            onClick={handleEnableNative}
-            disabled={nativeBusy !== null}
+            onClick={handleEnable}
+            disabled={busy !== null}
           >
-            {nativeBusy === "enable" && <Spinner />}
-            {nativeBusy === "enable" ? "Enabling…" : "Enable"}
+            {busy === "enable" && <Spinner />}
+            {busy === "enable" ? "Enabling…" : "Enable"}
           </button>
           <button
             type="button"
             className={styles.romRemoveButton}
             data-nav-item
-            onClick={handleDisableNative}
-            disabled={nativeBusy !== null}
+            onClick={handleDisable}
+            disabled={busy !== null}
           >
-            {nativeBusy === "disable" && <Spinner />}
-            {nativeBusy === "disable" ? "Disabling…" : "Disable"}
+            {busy === "disable" && <Spinner />}
+            {busy === "disable" ? "Disabling…" : "Disable"}
           </button>
         </div>
       </div>

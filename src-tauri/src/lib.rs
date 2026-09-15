@@ -215,6 +215,7 @@ pub fn run() {
             commands::get_ra_profile_summary,
             commands::get_steam_achievements,
             commands::apply_retroarch_achievements,
+            commands::apply_pcsx2_achievements,
             commands::rescan_library,
             commands::get_artwork_progress,
             commands::get_metadata_progress,

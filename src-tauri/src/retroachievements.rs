@@ -13,10 +13,14 @@
 //!
 //! Live achievement *unlocking* (popups, hardcore mode, memory-address
 //! triggers) is a different, unrelated integration — see
-//! `retro::native::enable_retroarch_achievements`, which points RetroArch's
-//! own cheevos engine at the user's account for the platforms Wervik
-//! launches through a managed RetroArch (Arcade, CPS, Neo Geo). Nothing
-//! here talks to that engine; this module only ever reads.
+//! `retro::native::enable_retroarch_achievements` and
+//! `retro::native::enable_pcsx2_achievements`, which each point a managed
+//! native emulator's own cheevos engine at the user's account. This module
+//! doesn't drive either engine itself, but does own [`login`], the one
+//! write-shaped call both of them need first (trading a password for a
+//! session token) — kept here rather than duplicated in `native` since it's
+//! genuinely about talking to retroachievements.org, not about either
+//! emulator's own config format.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -509,6 +513,46 @@ pub fn fetch_profile_summary(username: &str, api_key: &str) -> Result<RaProfileS
         total_points: response.total_points,
         total_true_points: response.total_true_points,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct RaLoginResponse {
+    #[serde(rename = "Success")]
+    success: bool,
+    #[serde(rename = "Error")]
+    error: Option<String>,
+    #[serde(rename = "Token")]
+    token: Option<String>,
+}
+
+/// Trades a RetroAchievements username/password for a durable session
+/// token, via the same `r=login2` request every real client (RetroArch,
+/// PCSX2, Dolphin...) sends — verified against the open-source `rcheevos`
+/// client library's own request builder
+/// (`rc_api_init_login_request_hosted` in `rcheevos/src/rapi/rc_api_user.c`)
+/// rather than assumed. The password is only ever used for this one
+/// request — the caller persists the returned token instead, wherever the
+/// target emulator's own config expects it (its own client would replace a
+/// stored password with this same token on its next successful login too).
+pub fn login(username: &str, password: &str) -> Result<String, String> {
+    let agent = new_agent();
+    let mut response = agent
+        .post("https://retroachievements.org/dorequest.php")
+        .send_form([("r", "login2"), ("u", username), ("p", password)])
+        .map_err(|error| format!("RetroAchievements request failed: {error}"))?;
+    let response: RaLoginResponse = response
+        .body_mut()
+        .read_json()
+        .map_err(|error| format!("Could not read RetroAchievements' response: {error}"))?;
+
+    if !response.success {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "RetroAchievements rejected this login.".to_string()));
+    }
+    response
+        .token
+        .ok_or_else(|| "RetroAchievements did not return a session token.".to_string())
 }
 
 /// One ROM to look up in the background sweep below.

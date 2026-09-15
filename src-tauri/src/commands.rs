@@ -1718,6 +1718,28 @@ pub fn apply_retroarch_achievements(
     }
 }
 
+/// PCSX2's counterpart to `apply_retroarch_achievements` above — same
+/// "never store the password, only relay it once" contract, except PCSX2
+/// has no config field that performs its own login on next launch the way
+/// RetroArch's does, so Wervik performs the one-time RetroAchievements
+/// login itself and writes the resulting session token straight into
+/// PCSX2's own `secrets.ini` (see `retro::native::enable_pcsx2_achievements`).
+#[tauri::command(async)]
+pub fn apply_pcsx2_achievements(
+    state: State<AppStateHandle>,
+    enabled: bool,
+    username: String,
+    password: String,
+    hardcore: bool,
+) -> Result<(), String> {
+    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
+    if enabled {
+        retro_native::enable_pcsx2_achievements(&app_data_dir, &username, &password, hardcore)
+    } else {
+        retro_native::disable_pcsx2_achievements(&app_data_dir)
+    }
+}
+
 #[tauri::command(async)]
 pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());

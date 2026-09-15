@@ -374,6 +374,18 @@ enum DownloadSource {
         repo: &'static str,
         /// Exact release asset filename to download.
         asset_name: &'static str,
+        /// `None` tracks whatever GitHub's own `/releases/latest` currently
+        /// is — fine for a project whose release process Wervik already
+        /// trusts to keep working (DuckStation, FBNeo, gopher64, Cemu).
+        /// `Some(tag)` pins to that exact release instead, for a project
+        /// where Wervik also drops its own generated config next to the
+        /// install (PCSX2's `PCSX2.ini`/`secrets.ini` — see
+        /// `write_pcsx2_first_run_config`) that a future release could
+        /// change the shape of without warning; pinning means a real person
+        /// re-verifies the new release's config format before Wervik
+        /// starts trusting it, rather than silently shipping a config that
+        /// might not apply cleanly anymore.
+        tag: Option<&'static str>,
     },
     Url(&'static str),
 }
@@ -434,6 +446,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             source: DownloadSource::Github {
                 repo: "gopher64/gopher64",
                 asset_name: "gopher64-linux-x86_64",
+                tag: None,
             },
             kind: ManagedKind::Binary,
         }),
@@ -441,6 +454,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             source: DownloadSource::Github {
                 repo: "stenzek/duckstation",
                 asset_name: "DuckStation-x64.AppImage",
+                tag: None,
             },
             kind: ManagedKind::AppImage,
         }),
@@ -448,6 +462,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             source: DownloadSource::Github {
                 repo: "finalburnneo/FBNeo",
                 asset_name: "linux-sdl2-x86_64.zip",
+                tag: None,
             },
             kind: ManagedKind::ZippedBinary {
                 binary_name: "fbneo",
@@ -462,6 +477,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             source: DownloadSource::Github {
                 repo: "cemu-project/Cemu",
                 asset_name: "Cemu-*-x86_64.AppImage",
+                tag: None,
             },
             kind: ManagedKind::AppImage,
         }),
@@ -514,12 +530,19 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
         // PCSX2's official Windows release is a portable `.7z` with
         // `pcsx2-qt.exe` sitting at the archive root (verified against the
         // real v2.8.2 asset) — `asset_name`'s `*` stands in for the version
-        // number the real filename embeds (e.g. `pcsx2-v2.8.2-windows-x64-Qt.7z`),
-        // which changes on every release.
+        // number the real filename embeds (e.g. `pcsx2-v2.8.2-windows-x64-Qt.7z`).
+        // Pinned to that exact tag, unlike every other managed release here:
+        // Wervik also drops its own generated `PCSX2.ini`/`secrets.ini` next
+        // to this install (see `write_pcsx2_first_run_config`), written
+        // against v2.8.2's exact settings format — a future PCSX2 release
+        // changing that format wouldn't be caught until it silently failed
+        // to skip the wizard or log achievements in. Bump this only after
+        // re-verifying the new release's config format matches.
         "pcsx2" => Some(ManagedRelease {
             source: DownloadSource::Github {
                 repo: "PCSX2/pcsx2",
                 asset_name: "pcsx2-*-windows-x64-Qt.7z",
+                tag: Some("v2.8.2"),
             },
             kind: ManagedKind::SevenZipBinary {
                 binary_name: "pcsx2-qt.exe",
@@ -537,6 +560,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             source: DownloadSource::Github {
                 repo: "cemu-project/Cemu",
                 asset_name: "cemu-*-windows-x64.zip",
+                tag: None,
             },
             kind: ManagedKind::ZippedBinary {
                 binary_name: "Cemu.exe",
@@ -635,6 +659,79 @@ fn set_retroarch_option(path: &Path, key: &str, value: &str) -> Result<(), Strin
     // RetroArch, `config/<CoreName>/` doesn't exist yet, so writing here
     // ahead of that failed with "path not found" (Windows os error 3) on a
     // brand-new install.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(path, output).map_err(|error| error.to_string())
+}
+
+/// Sets `key = value` under `[section]` in a standard sectioned `.ini` file
+/// (PCSX2's own format, via its `INISettingsInterface`) — unlike
+/// `set_retroarch_option`'s flat `retroarch.cfg`, creating the section (and
+/// the file itself) if either doesn't exist yet. Existing keys elsewhere in
+/// the file are left untouched, same reasoning as `set_retroarch_option`.
+#[cfg(target_os = "windows")]
+fn set_ini_option(path: &Path, section: &str, key: &str, value: &str) -> Result<(), String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+
+    let mut output = String::with_capacity(contents.len() + section.len() + key.len() + value.len() + 16);
+    let mut in_target_section = false;
+    let mut section_found = false;
+    let mut replaced = false;
+    for raw_line in contents.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if in_target_section && !replaced {
+                output.push_str(key);
+                output.push_str(" = ");
+                output.push_str(value);
+                output.push('\n');
+                replaced = true;
+            }
+            in_target_section = name == section;
+            section_found = section_found || in_target_section;
+            output.push_str(line);
+            output.push('\n');
+            continue;
+        }
+        if in_target_section
+            && !trimmed.starts_with(';')
+            && trimmed.split_once('=').is_some_and(|(left, _)| left.trim() == key)
+        {
+            output.push_str(key);
+            output.push_str(" = ");
+            output.push_str(value);
+            output.push('\n');
+            replaced = true;
+            continue;
+        }
+        output.push_str(line);
+        output.push('\n');
+    }
+    if in_target_section && !replaced {
+        output.push_str(key);
+        output.push_str(" = ");
+        output.push_str(value);
+        output.push('\n');
+    }
+    if !section_found {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push('[');
+        output.push_str(section);
+        output.push_str("]\n");
+        output.push_str(key);
+        output.push_str(" = ");
+        output.push_str(value);
+        output.push('\n');
+    }
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -752,6 +849,95 @@ pub fn enable_retroarch_achievements(
 #[cfg(not(target_os = "windows"))]
 pub fn disable_retroarch_achievements(_app_data_dir: &Path) -> Result<(), String> {
     Err("RetroArch achievements setup is only available on Windows.".to_string())
+}
+
+/// Where PCSX2 (in portable mode) keeps its own settings — `bios/`'s own
+/// sibling directory, per its real portable-mode layout.
+#[cfg(target_os = "windows")]
+fn pcsx2_settings_dir(app_data_dir: &Path) -> Option<PathBuf> {
+    managed_executable_path(app_data_dir, "pcsx2")
+        .parent()
+        .map(|dir| dir.join("inis"))
+}
+
+/// Skips PCSX2's own first-run setup wizard (BIOS/game-folder/controller/
+/// achievements-login pages) by pre-creating its settings file already
+/// marked complete — it otherwise runs unconditionally the moment
+/// `PCSX2.ini` doesn't exist yet, which is true of every fresh managed
+/// install. `SettingsVersion` must also be present and match PCSX2's own
+/// current value (verified against the real v2.8.2 source, `VMManager.cpp`'s
+/// `SETTINGS_VERSION`), or PCSX2 treats the file as unreadable and offers to
+/// reset it instead of skipping anything — see `DownloadSource::Github`'s
+/// `tag` doc comment for why PCSX2 is pinned to the exact release this was
+/// verified against, unlike every other managed emulator here.
+#[cfg(target_os = "windows")]
+fn write_pcsx2_first_run_config(app_data_dir: &Path) -> Result<(), String> {
+    let Some(inis_dir) = pcsx2_settings_dir(app_data_dir) else {
+        return Ok(());
+    };
+    let ini_path = inis_dir.join("PCSX2.ini");
+    set_ini_option(&ini_path, "UI", "SettingsVersion", "1")?;
+    set_ini_option(&ini_path, "UI", "SetupWizardIncomplete", "false")
+}
+
+/// Points PCSX2's own RetroAchievements engine (real unlock popups, hardcore
+/// mode) at `username` — unlike RetroArch's `cheevos_password` config field
+/// (see `enable_retroarch_achievements`), PCSX2 has no equivalent "hand me
+/// a password and log in yourself on next launch" option, so Wervik performs
+/// the same one-time login RetroAchievements' account exchange itself (see
+/// `retroachievements::login`) and writes only the resulting session token
+/// — never the password — into PCSX2's own `secrets.ini`, the same file its
+/// own login flow writes it to (verified against the real `Achievements.cpp`
+/// login callback).
+#[cfg(target_os = "windows")]
+pub fn enable_pcsx2_achievements(
+    app_data_dir: &Path,
+    username: &str,
+    password: &str,
+    hardcore: bool,
+) -> Result<(), String> {
+    let token = crate::retroachievements::login(username, password)?;
+    let inis_dir = pcsx2_settings_dir(app_data_dir)
+        .ok_or_else(|| "Install PCSX2 first (in Platforms) before signing in.".to_string())?;
+    let ini_path = inis_dir.join("PCSX2.ini");
+    let secrets_path = inis_dir.join("secrets.ini");
+
+    set_ini_option(&ini_path, "Achievements", "Enabled", "true")?;
+    set_ini_option(
+        &ini_path,
+        "Achievements",
+        "ChallengeMode",
+        if hardcore { "true" } else { "false" },
+    )?;
+    set_ini_option(&ini_path, "Achievements", "Username", username)?;
+    let login_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    set_ini_option(&ini_path, "Achievements", "LoginTimestamp", &login_timestamp)?;
+    set_ini_option(&secrets_path, "Achievements", "Token", &token)
+}
+
+#[cfg(target_os = "windows")]
+pub fn disable_pcsx2_achievements(app_data_dir: &Path) -> Result<(), String> {
+    let inis_dir = pcsx2_settings_dir(app_data_dir)
+        .ok_or_else(|| "Install PCSX2 first (in Platforms) before changing this.".to_string())?;
+    set_ini_option(&inis_dir.join("PCSX2.ini"), "Achievements", "Enabled", "false")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enable_pcsx2_achievements(
+    _app_data_dir: &Path,
+    _username: &str,
+    _password: &str,
+    _hardcore: bool,
+) -> Result<(), String> {
+    Err("PCSX2 achievements setup is only available on Windows.".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable_pcsx2_achievements(_app_data_dir: &Path) -> Result<(), String> {
+    Err("PCSX2 achievements setup is only available on Windows.".to_string())
 }
 
 /// Whether `platform`'s native RetroArch core can meaningfully render
@@ -966,8 +1152,15 @@ fn download_managed_release(
 ) -> Result<Vec<u8>, String> {
     let url = match release.source {
         DownloadSource::Url(url) => url.to_string(),
-        DownloadSource::Github { repo, asset_name } => {
-            let api_url = format!("https://api.github.com/repos/{repo}/releases/latest");
+        DownloadSource::Github {
+            repo,
+            asset_name,
+            tag,
+        } => {
+            let api_url = match tag {
+                Some(tag) => format!("https://api.github.com/repos/{repo}/releases/tags/{tag}"),
+                None => format!("https://api.github.com/repos/{repo}/releases/latest"),
+            };
             let github_release: GithubRelease = agent
                 .get(&api_url)
                 .header("User-Agent", "Wervik")
@@ -1178,6 +1371,13 @@ pub fn install(app_data_dir: &Path, platform: Platform, emulator_id: &str) -> Re
         if let Some(exe_dir) = managed_executable_path(app_data_dir, emulator.id).parent() {
             std::fs::create_dir_all(exe_dir.join("portable")).map_err(|e| e.to_string())?;
         }
+    }
+
+    // Skip PCSX2's own first-run wizard on its very first launch — see
+    // `write_pcsx2_first_run_config`'s doc comment.
+    #[cfg(target_os = "windows")]
+    if emulator.id == "pcsx2" {
+        write_pcsx2_first_run_config(app_data_dir)?;
     }
 
     Ok(())
@@ -2017,6 +2217,23 @@ mod tests {
         assert!(err.contains("not-a-real-emulator"));
     }
 
+    /// PCSX2 is pinned to a specific release (unlike every other managed
+    /// GitHub-sourced emulator, which tracks whatever `/releases/latest`
+    /// currently is) — see `DownloadSource::Github`'s `tag` doc comment for
+    /// why. A regression here would silently start tracking `latest` again.
+    #[test]
+    fn pcsx2_is_pinned_to_a_specific_release_unlike_other_github_sourced_emulators() {
+        let DownloadSource::Github { tag, .. } = managed_release_for("pcsx2").unwrap().source else {
+            panic!("pcsx2 is not sourced from GitHub");
+        };
+        assert_eq!(tag, Some("v2.8.2"));
+
+        let DownloadSource::Github { tag, .. } = managed_release_for("fbneo").unwrap().source else {
+            panic!("fbneo is not sourced from GitHub");
+        };
+        assert_eq!(tag, None);
+    }
+
     /// The exact real case this exists for: Cemu's own archive wraps
     /// everything in one version-named folder.
     #[test]
@@ -2298,6 +2515,94 @@ mod windows_tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn set_ini_option_creates_the_file_section_and_key_from_scratch() {
+        let path = std::env::temp_dir()
+            .join(format!("wervik-ini-fresh-{}.ini", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        set_ini_option(&path, "UI", "SetupWizardIncomplete", "false").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[UI]"));
+        assert!(contents.contains("SetupWizardIncomplete = false"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The real motivating case: updating `Achievements.Enabled` must not
+    /// disturb `UI.SetupWizardIncomplete` written earlier, nor any setting
+    /// PCSX2 itself already wrote into the same file.
+    #[test]
+    fn set_ini_option_updates_one_key_in_place_and_leaves_the_rest_of_the_file_alone() {
+        let path = std::env::temp_dir()
+            .join(format!("wervik-ini-preserve-{}.ini", std::process::id()));
+        std::fs::write(
+            &path,
+            "[UI]\nSettingsVersion = 1\nSetupWizardIncomplete = true\n\n[EmuCore]\nSomeOtherSetting = 5\n",
+        )
+        .unwrap();
+
+        set_ini_option(&path, "UI", "SetupWizardIncomplete", "false").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents,
+            "[UI]\nSettingsVersion = 1\nSetupWizardIncomplete = false\n\n[EmuCore]\nSomeOtherSetting = 5\n"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_ini_option_adds_a_new_key_to_an_existing_section() {
+        let path = std::env::temp_dir()
+            .join(format!("wervik-ini-add-key-{}.ini", std::process::id()));
+        std::fs::write(&path, "[Achievements]\nEnabled = true\n").unwrap();
+
+        set_ini_option(&path, "Achievements", "Username", "player1").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("Enabled = true"));
+        assert!(contents.contains("Username = player1"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_ini_option_appends_a_new_section_to_an_existing_file() {
+        let path = std::env::temp_dir()
+            .join(format!("wervik-ini-add-section-{}.ini", std::process::id()));
+        std::fs::write(&path, "[UI]\nSettingsVersion = 1\n").unwrap();
+
+        set_ini_option(&path, "Achievements", "Enabled", "true").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[UI]\nSettingsVersion = 1\n"));
+        assert!(contents.contains("[Achievements]\nEnabled = true\n"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_pcsx2_first_run_config_marks_the_wizard_complete_at_the_pinned_settings_version() {
+        let app_data_dir = std::env::temp_dir()
+            .join(format!("wervik-pcsx2-firstrun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        let executable = managed_executable_path(&app_data_dir, "pcsx2");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, b"fake pcsx2").unwrap();
+
+        write_pcsx2_first_run_config(&app_data_dir).unwrap();
+
+        let ini_path = pcsx2_settings_dir(&app_data_dir).unwrap().join("PCSX2.ini");
+        let contents = std::fs::read_to_string(&ini_path).unwrap();
+        assert!(contents.contains("SettingsVersion = 1"));
+        assert!(contents.contains("SetupWizardIncomplete = false"));
+
+        let _ = std::fs::remove_dir_all(&app_data_dir);
     }
 }
 

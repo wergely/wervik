@@ -90,6 +90,18 @@ export function applyRetroArchAchievements(
   return invoke("apply_retroarch_achievements", { enabled, username, password, hardcore });
 }
 
+/** PCSX2's counterpart to `applyRetroArchAchievements` above — same
+ * never-store-the-password contract, for PlayStation 2 games launched
+ * through Wervik's managed PCSX2. */
+export function applyPcsx2Achievements(
+  enabled: boolean,
+  username: string,
+  password: string,
+  hardcore: boolean,
+): Promise<void> {
+  return invoke("apply_pcsx2_achievements", { enabled, username, password, hardcore });
+}
+
 export function rescanLibrary(): Promise<LibrarySnapshot> {
   return invoke("rescan_library");
 }
