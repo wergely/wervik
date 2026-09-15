@@ -8,14 +8,12 @@ interface ContinuePlayingRowProps {
 }
 
 export function ContinuePlayingRow({ games, onSelect }: ContinuePlayingRowProps) {
-
-
   return (
     <section className={styles.section}>
       <h2 className={styles.heading}>Continue Playing</h2>
-      <div className={`${styles.row} wervik-scroll`}>
+      <div className={styles.row}>
         {games.length === 0 && <p>Play a game to start your history.</p>}
-        {games.slice(0, 10).map((game) => (
+        {games.map((game) => (
           <GameCard key={game.id} game={game} size="md" onSelect={onSelect} />
         ))}
       </div>

@@ -4,44 +4,84 @@
   padding: 40px 48px 60px;
 }
 
-.headerRow {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-bottom: 32px;
-}
-
-.backButton {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  border-radius: 999px;
-  padding: 10px 18px;
-  font-size: 0.9rem;
-  transition:
-    color 140ms var(--ease),
-    border-color 140ms var(--ease);
-}
-
-.backButton:hover,
-.backButton:focus-visible {
-  color: var(--text);
-  border-color: var(--violet);
-}
-
-.backButton:focus-visible {
-  box-shadow: var(--shadow-focus);
-}
-
 .title {
   font-size: 1.6rem;
   font-weight: 700;
-  margin: 0;
+  margin: 0 0 32px;
+}
+
+.layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 40px;
+}
+
+.sidebar {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: sticky;
+  top: 0;
+}
+
+.sidebarButton {
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition:
+    color 140ms var(--ease),
+    background 140ms var(--ease),
+    border-color 140ms var(--ease);
+}
+
+.sidebarButton:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.sidebarButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.sidebarButtonActive {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.content {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .group {
   max-width: 640px;
   margin-bottom: 36px;
+}
+
+.groupDescription {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 16px;
+}
+
+.groupDescription a {
+  color: var(--cyan);
+}
+
+.groupDescription code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.82em;
 }
 
 .groupTitle {
@@ -212,6 +252,69 @@
 
 .romRemoveButton:focus-visible {
   box-shadow: var(--shadow-focus);
+}
+
+.textInput {
+  width: 260px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.textInput:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.secretField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.revealButton {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease);
+}
+
+.revealButton:hover,
+.revealButton:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+.revealButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.nativeActions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.statusMessage {
+  color: var(--cyan);
+  font-size: 0.82rem;
+  margin-top: 4px;
+}
+
+.statusMessageError {
+  color: #ff8080;
+  font-size: 0.82rem;
+  margin-top: 4px;
 }
 
 .about {

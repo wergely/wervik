@@ -14,6 +14,10 @@ pub fn launch(app: &AppHandle, app_id: u32, launch_kind: LaunchKind) -> Result<(
     open_steam_uri(app, &format!("steam://rungameid/{app_id}"), launch_kind)
 }
 
+pub fn install(app: &AppHandle, app_id: u32, launch_kind: LaunchKind) -> Result<(), String> {
+    open_steam_uri(app, &format!("steam://install/{app_id}"), launch_kind)
+}
+
 pub fn open_store_page(
     app: &AppHandle,
     app_id: u32,

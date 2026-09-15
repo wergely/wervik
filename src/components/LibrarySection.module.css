@@ -265,6 +265,14 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* The column count is already computed in JS to exactly fill this
+     element's width (see `columns` in LibrarySection.tsx) — but leaving
+     the x-axis as the default `visible` makes it compute to `auto` too
+     (since `overflow-y` is a scrolling value), so a sub-pixel rounding
+     difference between that math and the browser's own layout was enough
+     to trigger a horizontal scrollbar over empty space. Nothing real ever
+     overflows here, so it's safe to just clip it. */
+  overflow-x: hidden;
 }
 
 .row {

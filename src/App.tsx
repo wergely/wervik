@@ -1,25 +1,32 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  installSteamGame,
   fetchCoverNow,
   getLibrary,
   launchBattleNetGame,
+  launchEaGame,
   launchRetroGame,
   launchXboxGame,
   stopRetroSession,
 } from "./api/tauri";
+import { AchievementsView } from "./components/AchievementsView";
 import { EmulatorView } from "./components/EmulatorView";
 import { GameDetail } from "./components/GameDetail";
+import { Header, type HeaderView } from "./components/Header";
 import { Home } from "./components/Home";
 import { PlatformDetail } from "./components/PlatformDetail";
 import { PlatformsView } from "./components/PlatformsView";
 import { Settings } from "./components/Settings";
+import { useChiptunePlayer } from "./hooks/useChiptunePlayer";
 import { useLibrary } from "./hooks/useLibrary";
 import { useSettings } from "./hooks/useSettings";
 import { useControllerNavigation } from "./navigation/useControllerNavigation";
 import type { Game } from "./types";
+import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
-type View = "home" | "detail" | "settings" | "emulator" | "platforms" | "platformDetail";
+type View = "home" | "detail" | "settings" | "emulator" | "platforms" | "platformDetail" | "achievements";
 
 interface ActiveSession {
   game: Game;
@@ -45,6 +52,24 @@ export default function App() {
   // keys/gamepad can't jump to elements behind it (e.g. Play/Favorite while
   // the Setup drawer is open).
   const [navScope, setNavScope] = useState<HTMLElement | null>(null);
+  // The game id currently tracked as running — Steam/Xbox/Battle.net and
+  // native retro emulators via a backend process monitor (see
+  // `playtime::spawn_process_monitor`), EmulatorJS via `activeSession`
+  // above. `justFinishedGameId` is a one-shot signal for "this game's
+  // session just ended" (see the `playtime-updated` listener below) that
+  // `GameDetail` uses to refresh its achievements panel automatically.
+  const [playingGameId, setPlayingGameId] = useState<string | null>(null);
+  const [justFinishedGameId, setJustFinishedGameId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unlisten = listen<string>("playtime-updated", (event) => {
+      setPlayingGameId((current) => (current === event.payload ? null : current));
+      setJustFinishedGameId(event.payload);
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     if (!settings) return;
@@ -53,9 +78,19 @@ export default function App() {
       .catch(() => {});
   }, [settings?.fullscreen]);
 
+  // Auto-pauses only while actually looking at or playing a specific game
+  // (its detail screen, or the emulator) — it keeps going in the
+  // background across Home, Settings and Platforms, which all share the
+  // same persistent top bar.
+  const musicControls = useChiptunePlayer(
+    Boolean(settings?.musicEnabled) && view !== "detail" && view !== "emulator",
+    settings?.musicVolume ?? 0.35,
+  );
+
   const selectedGame = snapshot?.games.find((g) => g.id === selectedGameId) ?? null;
 
   function handleSelectGame(game: Game) {
+    playSelectSound();
     setSelectedGameId(game.id);
     setView("detail");
     // Retro covers come from a background fetch that can be working
@@ -74,27 +109,47 @@ export default function App() {
   }
 
   async function handlePlay(game: Game, variantId?: string | null) {
+    playConfirmSound();
+    // Set only once the launch call itself has succeeded — an early throw
+    // above (missing id/code) or a rejected launch must never leave
+    // `playingGameId` stuck on a game that was never actually started.
     if (game.source === "steam") {
       if (game.appId == null) throw "This game has no Steam app id.";
+      if (!game.isInstalled) {
+        await installSteamGame(game.appId);
+        return;
+      }
       await play(game.appId);
+      setPlayingGameId(game.id);
       return;
     }
     if (game.source === "xbox") {
       if (game.xboxAppId == null) throw "This game has no Xbox app id.";
       await launchXboxGame(game.id);
+      setPlayingGameId(game.id);
       return;
     }
     if (game.source === "battlenet") {
       if (game.battlenetProductCode == null) throw "This game has no Battle.net product code.";
       await launchBattleNetGame(game.id);
+      setPlayingGameId(game.id);
+      return;
+    }
+    if (game.source === "ea") {
+      if (game.eaGameId == null) throw "This game has no EA App game id.";
+      await launchEaGame(game.id);
+      setPlayingGameId(game.id);
       return;
     }
     const launch = await launchRetroGame(game.id, variantId);
     if (launch.mode === "native") {
       // Runs as its own separate OS window (see `retro::native`) — Wervik
-      // has nothing to embed or track here, unlike an EmulatorJS session.
+      // doesn't embed it, but a backend process monitor still tracks when
+      // it exits (see `playtime::spawn_process_monitor`), same as Steam.
+      setPlayingGameId(game.id);
       return;
     }
+    setPlayingGameId(game.id);
     setActiveSession({ game, sessionId: launch.sessionId, url: launch.url, startedAt: Date.now() });
     setView("emulator");
   }
@@ -223,48 +278,73 @@ export default function App() {
     );
   }
 
+  const headerView: HeaderView =
+    view === "settings"
+      ? "settings"
+      : view === "platforms" || view === "platformDetail"
+        ? "platforms"
+        : view === "achievements"
+          ? "achievements"
+          : "home";
+
   return (
-    <div style={{ zoom: settings?.uiScale ?? 1, height: "100%" }}>
-      {view === "settings" ? (
-        <Settings
-          snapshot={snapshot}
-          settings={settings}
-          rescanning={rescanning}
-          onUpdateSettings={updateSettings}
-          onRescan={rescan}
-          onBack={handleBack}
-          onLibraryChange={applySnapshot}
-        />
-      ) : view === "detail" && selectedGame ? (
-        <GameDetail
-          game={selectedGame}
-          onBack={handleBack}
-          onPlay={handlePlay}
-          onToggleFavorite={toggleFavorite}
-          onSetReaction={updateReaction}
-          registerBackHandler={setBackOverride}
-          registerNavScope={setNavScope}
-        />
-      ) : view === "platforms" ? (
-        <PlatformsView onSelectPlatform={handleSelectPlatform} onBack={handleBack} />
-      ) : view === "platformDetail" && selectedPlatformKey ? (
-        <PlatformDetail
-          platformKey={selectedPlatformKey}
-          onBack={handleBack}
-        />
-      ) : (
-        <Home
-          snapshot={snapshot}
-          rescanning={rescanning}
-          onRescan={rescan}
-          onSelectGame={handleSelectGame}
-          onSetReaction={updateReaction}
-          onOpenSettings={() => setView("settings")}
-          onOpenPlatforms={() => setView("platforms")}
-          settings={settings}
-          onUpdateSettings={updateSettings}
-        />
-      )}
+    <div style={{ zoom: settings?.uiScale ?? 1, height: "100%", display: "flex", flexDirection: "column" }}>
+      <Header
+        activeView={headerView}
+        onGoHome={() => setView("home")}
+        onOpenSettings={() => setView("settings")}
+        onOpenPlatforms={() => setView("platforms")}
+        onOpenAchievements={() => setView("achievements")}
+        musicEnabled={Boolean(settings?.musicEnabled)}
+        onToggleMusic={() => updateSettings({ musicEnabled: !settings?.musicEnabled })}
+        onSkipTrack={musicControls.nextTrack}
+        musicTrackName={musicControls.trackName}
+        musicVolume={settings?.musicVolume ?? 0.35}
+        onChangeMusicVolume={(volume) => updateSettings({ musicVolume: volume })}
+      />
+      <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+        {view === "settings" ? (
+          <Settings
+            snapshot={snapshot}
+            settings={settings}
+            rescanning={rescanning}
+            onUpdateSettings={updateSettings}
+            onRescan={rescan}
+            onLibraryChange={applySnapshot}
+          />
+        ) : view === "detail" && selectedGame ? (
+          <GameDetail
+            game={selectedGame}
+            onBack={handleBack}
+            onPlay={handlePlay}
+            onToggleFavorite={toggleFavorite}
+            onSetReaction={updateReaction}
+            registerBackHandler={setBackOverride}
+            registerNavScope={setNavScope}
+            isPlaying={playingGameId === selectedGame.id}
+            justFinishedGameId={justFinishedGameId}
+          />
+        ) : view === "achievements" ? (
+          <AchievementsView snapshot={snapshot} onSelectGame={handleSelectGame} />
+        ) : view === "platforms" ? (
+          <PlatformsView onSelectPlatform={handleSelectPlatform} />
+        ) : view === "platformDetail" && selectedPlatformKey ? (
+          <PlatformDetail
+            platformKey={selectedPlatformKey}
+            onBack={handleBack}
+          />
+        ) : (
+          <Home
+            snapshot={snapshot}
+            rescanning={rescanning}
+            onRescan={rescan}
+            onSelectGame={handleSelectGame}
+            onSetReaction={updateReaction}
+            settings={settings}
+            onUpdateSettings={updateSettings}
+          />
+        )}
+      </div>
     </div>
   );
 }

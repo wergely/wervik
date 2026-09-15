@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,7 @@ use tauri::State;
 use tauri::{Emitter, Manager};
 
 use crate::battlenet::discovery::BattleNetGame;
+use crate::ea::discovery::EaGame;
 use crate::game_setup::{self, EnvVar, GamescopeConfig};
 use crate::mangohud::{self, MangoHudConfig};
 use crate::metadata::{self, GameMetadata, MetadataCache, MetadataProgress};
@@ -25,10 +26,13 @@ use crate::retro::{
     artwork, bios, discovery as retro_discovery, naming as retro_naming, native as retro_native,
     server as retro_server, session as retro_session,
 };
+use crate::retroachievements::{self, GameAchievements, RaProfileSummary, RetroAchievementsCache};
+use crate::steam::achievements::{self as steam_achievements, SteamAchievementsCache};
 use crate::steam::discovery::{self, LaunchKind, SteamInstall};
 use crate::steam::launch;
 use crate::steam::launch_options;
 use crate::steam::library::{self, Game};
+use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
 use crate::storage::{Settings, Store};
 use crate::xbox::discovery::XboxGame;
 
@@ -38,16 +42,33 @@ pub struct AppState {
     pub games: Vec<Game>,
     pub xbox_games: Vec<XboxGame>,
     pub battlenet_games: Vec<BattleNetGame>,
+    pub ea_games: Vec<EaGame>,
     pub battlenet_artwork_running: Arc<AtomicBool>,
     pub playtime: PlaytimeDb,
     pub metadata_cache: MetadataCache,
     pub nexus_cache: NexusCache,
+    pub retro_achievements_cache: RetroAchievementsCache,
+    /// Guards against two RetroAchievements sweeps running at once — same
+    /// reasoning as `artwork_fetch_running`.
+    pub retro_achievements_fetch_running: Arc<AtomicBool>,
+    pub steam_achievements_cache: SteamAchievementsCache,
+    /// Guards against two Steam achievements sweeps running at once — same
+    /// reasoning as `artwork_fetch_running`.
+    pub steam_achievements_fetch_running: Arc<AtomicBool>,
+    pub steam_owned_games_cache: SteamOwnedGamesCache,
+    pub steam_owned_games: Vec<OwnedGame>,
+    /// Guards against two Steam owned-games requests running at once.
+    pub steam_owned_games_fetch_running: Arc<AtomicBool>,
     pub metadata_fetch_running: Arc<AtomicBool>,
     pub metadata_progress: Arc<metadata::MetadataProgressState>,
     pub store: Store,
     pub game_setup_dir: PathBuf,
     pub app_data_dir: PathBuf,
     pub rom_games: Vec<RomGame>,
+    /// Guards against two ROM directory scans running at once — same
+    /// reasoning as `artwork_fetch_running`. Also what `get_rom_scan_status`
+    /// reports and `rom-scan-status` announces.
+    pub rom_scan_running: Arc<AtomicBool>,
     /// Session id -> (game id, running local server, playtime session id).
     /// Dropping the entry
     /// stops the server, since `RunningServer` shuts its thread down on
@@ -90,6 +111,7 @@ impl AppState {
     pub fn rescan(&mut self) {
         self.xbox_games = crate::xbox::discovery::scan();
         self.battlenet_games = crate::battlenet::discovery::scan();
+        self.ea_games = crate::ea::discovery::scan();
         crate::battlenet::artwork::spawn_fetch(
             self.app_handle.clone(),
             self.app_data_dir.clone(),
@@ -103,6 +125,9 @@ impl AppState {
         }
         self.seed_provider_playtime();
         self.start_metadata_fetch();
+        self.start_achievements_fetch();
+        self.start_steam_owned_fetch();
+        self.start_steam_achievements_fetch();
     }
 
     pub(crate) fn metadata_queries(&self) -> Vec<metadata::MetadataQuery> {
@@ -111,10 +136,21 @@ impl AppState {
             .map(|game| metadata::MetadataQuery {
                 id: game.app_id.to_string(),
                 name: game.name.clone(),
+                platform: None,
             })
+            .chain(
+                self.steam_owned_games
+                    .iter()
+                    .map(|game| metadata::MetadataQuery {
+                        id: game.app_id.to_string(),
+                        name: game.name.clone(),
+                        platform: None,
+                    }),
+            )
             .chain(self.xbox_games.iter().map(|game| metadata::MetadataQuery {
                 id: game.id.clone(),
                 name: game.name.clone(),
+                platform: None,
             }))
             .chain(
                 self.battlenet_games
@@ -122,23 +158,120 @@ impl AppState {
                     .map(|game| metadata::MetadataQuery {
                         id: game.id.clone(),
                         name: game.name.clone(),
+                        platform: None,
                     }),
             )
+            .chain(self.ea_games.iter().map(|game| metadata::MetadataQuery {
+                id: game.id.clone(),
+                name: game.name.clone(),
+                platform: None,
+            }))
             .chain(self.rom_games.iter().map(|game| metadata::MetadataQuery {
                 id: game.id.clone(),
                 name: game.name.clone(),
+                platform: Some(game.platform),
             }))
             .collect()
     }
 
     pub(crate) fn start_metadata_fetch(&self) {
+        let settings = self.store.settings();
         metadata::spawn_fetch(
             self.app_handle.clone(),
             self.app_data_dir.clone(),
             self.metadata_queries(),
             self.metadata_fetch_running.clone(),
             self.metadata_progress.clone(),
+            settings.igdb_client_id,
+            settings.igdb_client_secret,
         );
+    }
+
+    /// RetroAchievements only ever applies to ROMs — Steam/Xbox/Battle.net
+    /// have no equivalent here.
+    pub(crate) fn achievement_queries(&self) -> Vec<retroachievements::AchievementQuery> {
+        self.rom_games
+            .iter()
+            .map(|game| retroachievements::AchievementQuery {
+                id: game.id.clone(),
+                name: game.name.clone(),
+                platform: game.platform,
+            })
+            .collect()
+    }
+
+    pub(crate) fn start_achievements_fetch(&self) {
+        let settings = self.store.settings();
+        retroachievements::spawn_fetch(
+            self.app_handle.clone(),
+            self.achievement_queries(),
+            settings.ra_username,
+            settings.ra_api_key,
+            self.retro_achievements_fetch_running.clone(),
+        );
+    }
+
+    /// The manual override if set, else whatever's auto-detected from the
+    /// local Steam install's own `loginusers.vdf` — `None` when neither is
+    /// available (no override, and either no Steam install or no account
+    /// has ever signed in locally).
+    pub(crate) fn steam_id64(&self) -> Option<String> {
+        let settings = self.store.settings();
+        if !settings.steam_id64_override.trim().is_empty() {
+            return Some(settings.steam_id64_override.trim().to_string());
+        }
+        steam_achievements::detect_steam_id64(&self.steam_install.as_ref()?.root)
+    }
+
+    pub(crate) fn start_steam_achievements_fetch(&mut self) {
+        let settings = self.store.settings();
+        let steam_id64 = self.steam_id64();
+        if let Some(steam_id64) = steam_id64.as_deref() {
+            if let Err(error) = self.steam_achievements_cache.select_account(steam_id64) {
+                eprintln!("Could not select the Steam achievements account: {error}");
+            }
+        }
+        let app_ids = self
+            .games
+            .iter()
+            .map(|game| (game.app_id.to_string(), game.app_id))
+            .collect();
+        steam_achievements::spawn_fetch(
+            self.app_handle.clone(),
+            app_ids,
+            settings.steam_api_key.trim().to_string(),
+            steam_id64,
+            self.steam_achievements_fetch_running.clone(),
+        );
+    }
+
+    pub(crate) fn start_steam_owned_fetch(&mut self) {
+        let steam_id64 = self.steam_id64();
+        self.steam_owned_games = if let Some(steam_id64) = steam_id64.as_deref() {
+            if let Err(error) = self.steam_owned_games_cache.select_account(steam_id64) {
+                eprintln!("Could not select the Steam owned-games account: {error}");
+            }
+            self.steam_owned_games_cache
+                .get(steam_id64)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let settings = self.store.settings();
+        if let Some(steam_id64) = steam_id64 {
+            if settings.steam_api_key.trim().is_empty()
+                || self.steam_owned_games_cache.get_fresh(&steam_id64).is_some()
+            {
+                return;
+            }
+            owned::spawn_fetch(
+                self.app_handle.clone(),
+                settings.steam_api_key.trim().to_string(),
+                steam_id64,
+                self.steam_owned_games_fetch_running.clone(),
+            );
+        }
     }
 
     /// Reconciles ROMs whose localized filenames resolve to the same IGDB
@@ -189,37 +322,77 @@ impl AppState {
                 self.playtime
                     .seed_if_missing(&game.id, 0, self.store.local_last_played(&game.id));
         }
+        for game in &self.ea_games {
+            let _ = self
+                .playtime
+                .seed_if_missing(&game.id, 0, self.store.local_last_played(&game.id));
+        }
     }
 
-    /// Full filesystem walk of every configured ROM directory. Only called
-    /// from an explicit user action (adding/removing a directory, or a
-    /// "Rescan" button) — never on ordinary app startup, which instead
-    /// loads the cached results (see `retro::cache`). Also kicks off a
-    /// background best-effort box art fetch for any newly-seen game (see
-    /// `spawn_artwork_fetch`).
-    pub fn rescan_retro(&mut self) {
-        self.rom_games = retro_discovery::scan_directories(&self.store.rom_directories());
-        self.store.migrate_legacy_bios_paths(
-            self.rom_games
-                .iter()
-                .map(|rom| (rom.id.clone(), rom.platform.key().to_string()))
-                .collect(),
-        );
-        self.dedupe_rom_games_by_metadata();
-        let _ = crate::retro::cache::save(&self.app_data_dir, &self.rom_games);
-        // IGDB is the primary cover source for retro games when configured.
-        // Keep the old libretro-thumbnails pass only for installations that
-        // have no IGDB credentials, where it remains a useful fallback.
-        if !metadata::is_configured() {
-            spawn_artwork_fetch(
-                self.app_handle.clone(),
-                self.app_data_dir.clone(),
-                self.rom_games.clone(),
-                self.artwork_fetch_running.clone(),
-                self.artwork_progress.clone(),
-            );
+    /// Full filesystem walk of every configured ROM directory, in the
+    /// background — only called from an explicit user action (adding/
+    /// removing a directory, or a "Rescan" button), never on ordinary app
+    /// startup, which instead loads the cached results (see
+    /// `retro::cache`). Unlike every other background sweep in this file,
+    /// this one doesn't hold the state lock for its slow part (the walk
+    /// itself): a large ROM library would otherwise freeze every other
+    /// command (launching a game, opening Settings, ...) for as long as
+    /// the scan takes. The frontend follows along via `rom-scan-status`
+    /// (see `get_rom_scan_status`) the same way it does the metadata and
+    /// artwork sweeps' own progress events.
+    pub(crate) fn spawn_rom_scan(&self) {
+        if self
+            .rom_scan_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
         }
-        self.start_metadata_fetch();
+        let app_handle = self.app_handle.clone();
+        let running = self.rom_scan_running.clone();
+        let dirs = self.store.rom_directories();
+
+        std::thread::spawn(move || {
+            let _ = app_handle.emit("rom-scan-status", true);
+            let scanned = retro_discovery::scan_directories(&dirs);
+            if let Some(state_handle) = app_handle.try_state::<AppStateHandle>() {
+                let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                state.rom_games = scanned;
+                // Built as an owned `Vec` first rather than passed inline:
+                // through a `MutexGuard`, `state.store.migrate_legacy_bios_paths(state.rom_games...)`
+                // borrows `state` mutably (for `.store`) and immutably (for
+                // `.rom_games`) at the same time — the compiler can't prove
+                // those are disjoint fields the way it can through a plain
+                // `&mut AppState`, since each access goes through a
+                // separate `Deref`/`DerefMut` call on the guard.
+                let bios_migration_keys: Vec<(String, String)> = state
+                    .rom_games
+                    .iter()
+                    .map(|rom| (rom.id.clone(), rom.platform.key().to_string()))
+                    .collect();
+                state.store.migrate_legacy_bios_paths(bios_migration_keys);
+                state.dedupe_rom_games_by_metadata();
+                let _ = crate::retro::cache::save(&state.app_data_dir, &state.rom_games);
+                // IGDB is the primary cover source for retro games when
+                // configured. Keep the old libretro-thumbnails pass only
+                // for installations that have no IGDB credentials, where
+                // it remains a useful fallback.
+                let settings = state.store.settings();
+                if !metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret) {
+                    spawn_artwork_fetch(
+                        state.app_handle.clone(),
+                        state.app_data_dir.clone(),
+                        state.rom_games.clone(),
+                        state.artwork_fetch_running.clone(),
+                        state.artwork_progress.clone(),
+                    );
+                }
+                state.start_metadata_fetch();
+                state.start_achievements_fetch();
+            }
+            running.store(false, Ordering::SeqCst);
+            let _ = app_handle.emit("rom-scan-status", false);
+        });
     }
 }
 
@@ -283,7 +456,7 @@ pub(crate) fn spawn_artwork_fetch(
 /// Rust before the UI has a chance to subscribe to `retro-artwork-progress`).
 #[tauri::command(async)]
 pub fn get_artwork_progress(state: State<AppStateHandle>) -> ArtworkProgress {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     ArtworkProgress {
         done: state.artwork_progress.done.load(Ordering::SeqCst),
         total: state.artwork_progress.total.load(Ordering::SeqCst),
@@ -292,11 +465,26 @@ pub fn get_artwork_progress(state: State<AppStateHandle>) -> ArtworkProgress {
 
 #[tauri::command(async)]
 pub fn get_metadata_progress(state: State<AppStateHandle>) -> MetadataProgress {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     MetadataProgress {
         done: state.metadata_progress.done.load(Ordering::SeqCst),
         total: state.metadata_progress.total.load(Ordering::SeqCst),
     }
+}
+
+/// Wipes the IGDB metadata cache (entries, misses, and downloaded artwork)
+/// and re-runs the background fetch for every game, from Settings' "Refresh
+/// metadata" button. Unlike a normal rescan, this is the only way to correct
+/// a game that already has a *wrong* cached match — the cache otherwise
+/// treats it as fresh for up to 30 days regardless of whether the match was
+/// actually right.
+#[tauri::command(async)]
+pub fn refresh_all_metadata(state: State<AppStateHandle>) -> Result<(), String> {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.metadata_cache.clear()?;
+    metadata::clear_artwork(&state.app_data_dir)?;
+    state.start_metadata_fetch();
+    Ok(())
 }
 
 /// Jumps one game to the front of the box-art line — called when the user
@@ -309,12 +497,12 @@ pub fn get_metadata_progress(state: State<AppStateHandle>) -> MetadataProgress {
 /// through a `retro-artwork-updated` event once it lands.
 #[tauri::command(async)]
 pub fn fetch_cover_now(state: State<AppStateHandle>, id: String) -> Option<String> {
-    if metadata::is_configured() {
-        return None;
-    }
-
     let (app_handle, app_data_dir, rom) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let settings = state.store.settings();
+        if metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret) {
+            return None;
+        }
         let rom = state.rom_games.iter().find(|r| r.id == id)?.clone();
         (state.app_handle.clone(), state.app_data_dir.clone(), rom)
     };
@@ -345,7 +533,7 @@ fn start_process_session(
 ) -> Result<(), String> {
     let session_id = state.playtime.start_session(game_id, source, now_unix())?;
     let target = ProcessTarget::from_install_dir(install_dir);
-    playtime::spawn_process_monitor(state.app_handle.clone(), session_id, target);
+    playtime::spawn_process_monitor(state.app_handle.clone(), session_id, game_id.to_string(), target);
     Ok(())
 }
 
@@ -356,7 +544,7 @@ pub(crate) fn finish_playtime_session(app_handle: &tauri::AppHandle, session_id:
     let Some(state) = app_handle.try_state::<AppStateHandle>() else {
         return;
     };
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let Ok(Some(finished)) = state.playtime.finish_session(session_id, now_unix()) else {
         return;
     };
@@ -367,7 +555,7 @@ pub(crate) fn finish_playtime_session(app_handle: &tauri::AppHandle, session_id:
             finished.ended_at,
         );
     }
-    let _ = app_handle.emit("playtime-updated", ());
+    let _ = app_handle.emit("playtime-updated", &finished.game_id);
 }
 
 /// Where a game came from. The frontend uses this to label/filter games and
@@ -381,6 +569,7 @@ pub enum GameSource {
     Xbox,
     #[serde(rename = "battlenet")]
     BattleNet,
+    Ea,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -392,6 +581,7 @@ pub struct GameDto {
     pub id: String,
     pub source: GameSource,
     pub name: String,
+    pub is_installed: bool,
     pub install_dir: String,
     pub library_path: String,
     pub size_on_disk_bytes: u64,
@@ -414,6 +604,9 @@ pub struct GameDto {
     /// Present only for `source == BattleNet` — the product code accepted by
     /// the Battle.net launcher's `--exec="launch ..."` command.
     pub battlenet_product_code: Option<String>,
+    /// Present only for `source == Ea` — the content/offer id accepted by
+    /// EA App's launch protocol.
+    pub ea_game_id: Option<String>,
     /// Short platform label for the source badge (e.g. "SNES"), present
     /// only for `source == Retro`.
     pub platform: Option<String>,
@@ -435,6 +628,14 @@ pub struct GameDto {
     /// instead (see `retro::discovery::RomVariant`, `launch_retro_game`'s
     /// `variant_id`) — empty for Steam games.
     pub variants: Vec<GameVariant>,
+    /// Achievement completion percentage (earned/total, rounded), from
+    /// whatever the relevant background sweep has cached so far —
+    /// RetroAchievements for a retro game (`retroachievements::spawn_fetch`),
+    /// the Steam Web API for a Steam one (`steam::achievements::spawn_fetch`).
+    /// `None` for Xbox/Battle.net (neither has an achievements source
+    /// wired up), when the relevant credentials aren't configured, or
+    /// before a match has been found/cached yet.
+    pub achievement_completion_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -480,6 +681,7 @@ pub struct LibrarySnapshot {
     pub steam_root: Option<String>,
     pub xbox_found: bool,
     pub battlenet_found: bool,
+    pub ea_found: bool,
     pub library_folders: Vec<String>,
     pub games: Vec<GameDto>,
 }
@@ -507,6 +709,7 @@ fn steam_to_dto(game: &Game, store: &Store, playtime: &PlaytimeDb) -> GameDto {
         id: game.app_id.to_string(),
         source: GameSource::Steam,
         name: game.name.clone(),
+        is_installed: true,
         install_dir: game.install_dir.to_string_lossy().to_string(),
         library_path: game.library_path.to_string_lossy().to_string(),
         size_on_disk_bytes: game.size_on_disk_bytes,
@@ -531,12 +734,49 @@ fn steam_to_dto(game: &Game, store: &Store, playtime: &PlaytimeDb) -> GameDto {
         app_id: Some(game.app_id),
         xbox_app_id: None,
         battlenet_product_code: None,
+        ea_game_id: None,
         platform: None,
         platform_key: None,
         requires_bios: None,
         native_emulator: None,
         default_region: None,
         variants: Vec::new(),
+        achievement_completion_percent: None,
+    }
+}
+
+fn steam_owned_to_dto(game: &OwnedGame, store: &Store, playtime: &PlaytimeDb) -> GameDto {
+    let id = game.app_id.to_string();
+    let (last_played, playtime_minutes) =
+        resolved_playtime(playtime, &id, game.last_played, game.playtime_minutes);
+    GameDto {
+        id,
+        source: GameSource::Steam,
+        name: game.name.clone(),
+        is_installed: false,
+        install_dir: String::new(),
+        library_path: String::new(),
+        size_on_disk_bytes: 0,
+        last_played,
+        playtime_minutes,
+        igdb_score: None,
+        igdb_metadata: None,
+        reaction: None,
+        cover_path: Some(owned::cover_url(game.app_id)),
+        hero_path: Some(owned::hero_url(game.app_id)),
+        logo_path: game.icon_url.clone(),
+        is_favorite: store.is_favorite(&game.app_id.to_string()),
+        app_id: Some(game.app_id),
+        xbox_app_id: None,
+        battlenet_product_code: None,
+        ea_game_id: None,
+        platform: None,
+        platform_key: None,
+        requires_bios: None,
+        native_emulator: None,
+        default_region: None,
+        variants: Vec::new(),
+        achievement_completion_percent: None,
     }
 }
 
@@ -712,6 +952,7 @@ fn retro_to_dto(
         id: rom.id.clone(),
         source: GameSource::Retro,
         name: rom.name.clone(),
+        is_installed: true,
         install_dir: String::new(),
         library_path: rom.rom_path.clone(),
         size_on_disk_bytes: rom.size_bytes,
@@ -728,6 +969,7 @@ fn retro_to_dto(
         app_id: None,
         xbox_app_id: None,
         battlenet_product_code: None,
+        ea_game_id: None,
         platform: Some(rom.platform.short_name().to_string()),
         platform_key: Some(rom.platform.key().to_string()),
         requires_bios: Some(rom.platform.requires_bios()),
@@ -742,6 +984,10 @@ fn retro_to_dto(
                 region: v.region.clone(),
             })
             .collect(),
+        // Filled in by `library_snapshot`, once per call, from whatever
+        // the background sweep has already cached — this constructor has
+        // no access to that cache.
+        achievement_completion_percent: None,
     }
 }
 
@@ -756,6 +1002,7 @@ fn xbox_to_dto(game: &XboxGame, store: &Store, playtime: &PlaytimeDb) -> GameDto
         id: game.id.clone(),
         source: GameSource::Xbox,
         name: game.name.clone(),
+        is_installed: true,
         install_dir: game.install_dir.to_string_lossy().to_string(),
         library_path: game.install_dir.to_string_lossy().to_string(),
         // Xbox does not expose a cheap, stable local size query. Walking a
@@ -774,12 +1021,14 @@ fn xbox_to_dto(game: &XboxGame, store: &Store, playtime: &PlaytimeDb) -> GameDto
         app_id: None,
         xbox_app_id: Some(game.aumid.clone()),
         battlenet_product_code: None,
+        ea_game_id: None,
         platform: None,
         platform_key: None,
         requires_bios: None,
         native_emulator: None,
         default_region: None,
         variants: Vec::new(),
+        achievement_completion_percent: None,
     }
 }
 
@@ -799,6 +1048,7 @@ fn battlenet_to_dto(
         id: game.id.clone(),
         source: GameSource::BattleNet,
         name: game.name.clone(),
+        is_installed: true,
         install_dir: game.install_dir.to_string_lossy().to_string(),
         library_path: game.install_dir.to_string_lossy().to_string(),
         // Battle.net does not expose a cheap, stable local size query. Avoid
@@ -817,12 +1067,51 @@ fn battlenet_to_dto(
         app_id: None,
         xbox_app_id: None,
         battlenet_product_code: Some(game.launch_code.clone()),
+        ea_game_id: None,
         platform: None,
         platform_key: None,
         requires_bios: None,
         native_emulator: None,
         default_region: None,
         variants: Vec::new(),
+        achievement_completion_percent: None,
+    }
+}
+
+fn ea_to_dto(game: &EaGame, store: &Store, playtime: &PlaytimeDb) -> GameDto {
+    let (last_played, playtime_minutes) =
+        resolved_playtime(playtime, &game.id, store.local_last_played(&game.id), None);
+    GameDto {
+        id: game.id.clone(),
+        source: GameSource::Ea,
+        name: game.name.clone(),
+        is_installed: true,
+        install_dir: game.install_dir.to_string_lossy().to_string(),
+        library_path: game.install_dir.to_string_lossy().to_string(),
+        // EA App does not expose a cheap, stable local size query. Avoid
+        // walking large installs during startup; the detail view omits size
+        // for this source until a dedicated asynchronous size pass exists.
+        size_on_disk_bytes: 0,
+        last_played,
+        playtime_minutes,
+        igdb_score: None,
+        igdb_metadata: None,
+        reaction: None,
+        cover_path: None,
+        hero_path: None,
+        logo_path: None,
+        is_favorite: store.is_favorite(&game.id),
+        app_id: None,
+        xbox_app_id: None,
+        battlenet_product_code: None,
+        ea_game_id: Some(game.launch_id.clone()),
+        platform: None,
+        platform_key: None,
+        requires_bios: None,
+        native_emulator: None,
+        default_region: None,
+        variants: Vec::new(),
+        achievement_completion_percent: None,
     }
 }
 
@@ -839,11 +1128,27 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
                 .map(|e| e.display_name.to_string())
         });
     }
+    let steam_achievements_account = state.steam_id64();
+    let steam_achievements_enabled =
+        !state.store.settings().steam_api_key.trim().is_empty()
+            && steam_achievements_account.is_some();
 
+    let installed_steam_ids: HashSet<u32> = state
+        .games
+        .iter()
+        .map(|game| game.app_id)
+        .collect();
     let mut games: Vec<GameDto> = state
         .games
         .iter()
         .map(|g| steam_to_dto(g, &state.store, &state.playtime))
+        .chain(
+            state
+                .steam_owned_games
+                .iter()
+                .filter(|g| !installed_steam_ids.contains(&g.app_id))
+                .map(|g| steam_owned_to_dto(g, &state.store, &state.playtime)),
+        )
         .chain(
             state
                 .xbox_games
@@ -855,6 +1160,12 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
                 .battlenet_games
                 .iter()
                 .map(|g| battlenet_to_dto(g, &state.store, &state.playtime, &state.app_data_dir)),
+        )
+        .chain(
+            state
+                .ea_games
+                .iter()
+                .map(|g| ea_to_dto(g, &state.store, &state.playtime)),
         )
         .chain(state.rom_games.iter().map(|r| {
             let native = native_by_platform
@@ -901,6 +1212,20 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
                 }
             }
         }
+        game.achievement_completion_percent = match game.source {
+            GameSource::Retro => state
+                .retro_achievements_cache
+                .get(&game.id)
+                .and_then(|achievements| achievements.completion_percent()),
+            GameSource::Steam if steam_achievements_enabled => steam_achievements_account
+                .as_deref()
+                .and_then(|steam_id64| {
+                    state.steam_achievements_cache.get(&game.id, steam_id64)
+                })
+                .and_then(|achievements| achievements.completion_percent()),
+            GameSource::Steam => None,
+            GameSource::Xbox | GameSource::BattleNet | GameSource::Ea => None,
+        };
     }
 
     LibrarySnapshot {
@@ -911,6 +1236,7 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
             .map(|i| i.root.to_string_lossy().to_string()),
         xbox_found: !state.xbox_games.is_empty(),
         battlenet_found: !state.battlenet_games.is_empty(),
+        ea_found: !state.ea_games.is_empty(),
         library_folders: state
             .library_folders
             .iter()
@@ -922,7 +1248,37 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
 
 #[tauri::command(async)]
 pub fn get_library(state: State<AppStateHandle>) -> LibrarySnapshot {
-    library_snapshot(&state.lock().unwrap())
+    library_snapshot(&state.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Shared tail of `get_game_metadata` and `refresh_game_metadata`: runs the
+/// actual IGDB lookup and records either the result or a miss in the cache.
+/// Callers are responsible for anything that has to happen *before* the
+/// lookup (checking for an already-fresh cache hit, or clearing a stale one).
+fn fetch_and_store_metadata(
+    state: &State<AppStateHandle>,
+    app_data_dir: &Path,
+    game_id: String,
+    game_name: &str,
+    platform: Option<Platform>,
+    settings: &Settings,
+) -> Result<Option<GameMetadata>, String> {
+    let Some(metadata) = metadata::fetch_game(
+        app_data_dir,
+        &game_id,
+        game_name,
+        platform,
+        &settings.igdb_client_id,
+        &settings.igdb_client_secret,
+    )?
+    else {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.metadata_cache.mark_miss(game_id)?;
+        return Ok(None);
+    };
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.metadata_cache.put(game_id, metadata.clone())?;
+    Ok(Some(metadata))
 }
 
 /// Returns cached IGDB metadata or performs one best-effort lookup for the
@@ -934,13 +1290,16 @@ pub fn get_game_metadata(
     state: State<AppStateHandle>,
     game_id: String,
     game_name: String,
+    platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
-    let (cached, recent_miss, app_data_dir) = {
-        let state = state.lock().unwrap();
+    let platform = platform_key.as_deref().and_then(Platform::from_key);
+    let (cached, recent_miss, app_data_dir, settings) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         (
             state.metadata_cache.get(&game_id),
             state.metadata_cache.recent_miss(&game_id),
             state.app_data_dir.clone(),
+            state.store.settings(),
         )
     };
     if let Some(metadata) = cached.filter(metadata::is_fresh) {
@@ -950,14 +1309,31 @@ pub fn get_game_metadata(
         return Ok(None);
     }
 
-    let Some(metadata) = metadata::fetch_game(&app_data_dir, &game_id, &game_name)? else {
-        let mut state = state.lock().unwrap();
-        state.metadata_cache.mark_miss(game_id)?;
-        return Ok(None);
+    fetch_and_store_metadata(&state, &app_data_dir, game_id, &game_name, platform, &settings)
+}
+
+/// Forces a fresh IGDB lookup for one game, bypassing the cache entirely —
+/// the per-game "Refresh metadata" action on the game details page, for when
+/// a game is stuck with a wrong cached match (see `refresh_all_metadata` for
+/// the whole-library equivalent). Also clears this game's own downloaded
+/// artwork first, since `download_image` would otherwise keep serving the
+/// old (possibly wrong) cover/screenshots already on disk.
+#[tauri::command(async)]
+pub fn refresh_game_metadata(
+    state: State<AppStateHandle>,
+    game_id: String,
+    game_name: String,
+    platform_key: Option<String>,
+) -> Result<Option<GameMetadata>, String> {
+    let platform = platform_key.as_deref().and_then(Platform::from_key);
+    let (app_data_dir, settings) = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.metadata_cache.remove(&game_id)?;
+        metadata::clear_artwork_for(&state.app_data_dir, &game_id)?;
+        (state.app_data_dir.clone(), state.store.settings())
     };
-    let mut state = state.lock().unwrap();
-    state.metadata_cache.put(game_id, metadata.clone())?;
-    Ok(Some(metadata))
+
+    fetch_and_store_metadata(&state, &app_data_dir, game_id, &game_name, platform, &settings)
 }
 
 /// Returns the cached Nexus Mods trending feed for the selected game, or
@@ -972,7 +1348,7 @@ pub fn get_nexus_mods(
         return Ok(None);
     };
     let (fresh, stale) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         (
             state.nexus_cache.get_fresh(domain),
             state.nexus_cache.get(domain),
@@ -984,7 +1360,7 @@ pub fn get_nexus_mods(
 
     match nexus::fetch_trending(domain) {
         Ok(mods) => {
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state.nexus_cache.put(domain.to_string(), mods.clone())?;
             Ok(Some(mods))
         }
@@ -992,9 +1368,338 @@ pub fn get_nexus_mods(
     }
 }
 
+/// Returns cached RetroAchievements progress for a ROM, or fetches it on
+/// demand when the cache is stale (or `force` is set — the manual refresh
+/// button, or right after a play session on this game ends). `Ok(None)`
+/// covers every "nothing to show" case — the game isn't a ROM, no
+/// RetroAchievements credentials are configured in Settings, or
+/// RetroAchievements simply has no matching console/title (see
+/// `retroachievements::fetch_for_game`) — none of which are user-facing
+/// errors.
+#[tauri::command(async)]
+pub fn get_retro_achievements(
+    state: State<AppStateHandle>,
+    game_id: String,
+    force: bool,
+) -> Result<Option<GameAchievements>, String> {
+    let (rom, username, api_key, fresh, stale) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(rom) = state.rom_games.iter().find(|r| r.id == game_id).cloned() else {
+            return Ok(None);
+        };
+        let settings = state.store.settings();
+        (
+            rom,
+            settings.ra_username,
+            settings.ra_api_key,
+            state.retro_achievements_cache.get_fresh(&game_id),
+            state.retro_achievements_cache.get(&game_id),
+        )
+    };
+    if username.trim().is_empty() || api_key.trim().is_empty() {
+        return Ok(None);
+    }
+    if !force {
+        if let Some(achievements) = fresh {
+            return Ok(Some(achievements));
+        }
+    }
+
+    match retroachievements::fetch_for_game(&username, &api_key, rom.platform, &rom.name) {
+        Ok(Some(achievements)) => {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state.retro_achievements_cache.put(game_id, achievements.clone())?;
+            Ok(Some(achievements))
+        }
+        Ok(None) => Ok(None),
+        Err(error) => stale.map_or(Err(error), |achievements| Ok(Some(achievements))),
+    }
+}
+
+/// Steam counterpart to `get_retro_achievements` — matched by the exact
+/// Steam app id instead of a fuzzy title/console guess, so `Ok(None)` only
+/// ever means "this game has no achievements at all". A real `Err` (most
+/// commonly a private Steam profile) is left for the frontend to surface,
+/// since — unlike a RetroAchievements mismatch — it's something the user
+/// can go fix.
+#[tauri::command(async)]
+pub fn get_steam_achievements(
+    state: State<AppStateHandle>,
+    game_id: String,
+    force: bool,
+) -> Result<Option<steam_achievements::GameAchievements>, String> {
+    let (app_id, api_key, steam_id64, fresh, stale) = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(app_id) = state
+            .games
+            .iter()
+            .find(|g| g.app_id.to_string() == game_id)
+            .map(|g| g.app_id)
+        else {
+            return Ok(None);
+        };
+        let settings = state.store.settings();
+        let steam_id64 = state.steam_id64();
+        if let Some(steam_id64) = steam_id64.as_deref() {
+            state.steam_achievements_cache.select_account(steam_id64)?;
+        }
+        let fresh = steam_id64
+            .as_deref()
+            .and_then(|id| state.steam_achievements_cache.get_fresh(&game_id, id));
+        let stale = steam_id64
+            .as_deref()
+            .and_then(|id| state.steam_achievements_cache.get(&game_id, id));
+        (
+            app_id,
+            settings.steam_api_key.trim().to_string(),
+            steam_id64,
+            fresh,
+            stale,
+        )
+    };
+    let Some(steam_id64) = steam_id64.filter(|id| !id.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if api_key.trim().is_empty() {
+        return Ok(None);
+    }
+    if !force {
+        if let Some(achievements) = fresh {
+            return Ok(Some(achievements));
+        }
+    }
+
+    match steam_achievements::fetch_for_game(&api_key, &steam_id64, app_id) {
+        Ok(Some(achievements)) => {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .steam_achievements_cache
+                .put(game_id, &steam_id64, achievements.clone())?;
+            Ok(Some(achievements))
+        }
+        Ok(None) => {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .steam_achievements_cache
+                .mark_miss(game_id, &steam_id64)?;
+            Ok(None)
+        }
+        Err(error) => stale.map_or(Err(error), |achievements| Ok(Some(achievements))),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameAchievementSummary {
+    pub game_id: String,
+    pub game_name: String,
+    pub source: String,
+    /// The retro platform's short label (e.g. "SNES") — same convention as
+    /// `GameDto.platform` (see `retro_to_dto`) — or `None` for a Steam game,
+    /// used to group the Platforms breakdown since Steam achievements
+    /// aren't tied to any one Wervik `Platform`.
+    pub platform: Option<String>,
+    /// The same platform's stable `Platform::key()` (e.g. "snes") — lets the
+    /// frontend look up a console icon without re-deriving one from
+    /// `platform`'s display name.
+    pub platform_key: Option<String>,
+    pub icon_url: Option<String>,
+    pub earned_count: usize,
+    pub total_count: usize,
+    /// 0 for Steam, which has no points concept.
+    pub points_earned: u32,
+    pub points_total: u32,
+    pub completion_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentUnlock {
+    pub game_id: String,
+    pub game_name: String,
+    pub source: String,
+    pub achievement_title: String,
+    pub achievement_description: String,
+    pub icon_url: String,
+    /// 0 for Steam, which has no points concept.
+    pub points: u32,
+    pub unlocked_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AchievementsOverview {
+    pub total_earned: usize,
+    pub total_possible: usize,
+    pub total_points_earned: u32,
+    pub total_points_possible: u32,
+    pub games: Vec<GameAchievementSummary>,
+    pub recent_unlocks: Vec<RecentUnlock>,
+}
+
+/// Newest-first unlocks shown on the Achievements overview — capped since a
+/// large library's full unlock history isn't useful past a recent window.
+const RECENT_UNLOCKS_LIMIT: usize = 60;
+
+/// Aggregates every game's already-cached achievement progress (RetroAchievements
+/// + Steam) into one cross-library view for the Achievements screen. Reads
+/// only the existing per-game caches — no network requests here — since
+/// both are already kept warm by their own background sweeps (see
+/// `retroachievements::spawn_fetch`/`steam_achievements::spawn_fetch`), the
+/// same data `library_snapshot` already draws each game's completion badge
+/// from.
+#[tauri::command(async)]
+pub fn get_achievements_overview(state: State<AppStateHandle>) -> AchievementsOverview {
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut games = Vec::new();
+    let mut recent_unlocks = Vec::new();
+    let mut total_earned = 0usize;
+    let mut total_possible = 0usize;
+    let mut total_points_earned = 0u32;
+    let mut total_points_possible = 0u32;
+
+    for rom in &state.rom_games {
+        let Some(achievements) = state.retro_achievements_cache.get(&rom.id) else {
+            continue;
+        };
+        if achievements.total_count == 0 {
+            continue;
+        }
+        total_earned += achievements.earned_count;
+        total_possible += achievements.total_count;
+        total_points_earned += achievements.points_earned;
+        total_points_possible += achievements.points_total;
+        games.push(GameAchievementSummary {
+            game_id: rom.id.clone(),
+            game_name: rom.name.clone(),
+            source: "retro".to_string(),
+            platform: Some(rom.platform.short_name().to_string()),
+            platform_key: Some(rom.platform.key().to_string()),
+            icon_url: achievements.icon_url.clone(),
+            earned_count: achievements.earned_count,
+            total_count: achievements.total_count,
+            points_earned: achievements.points_earned,
+            points_total: achievements.points_total,
+            completion_percent: achievements.completion_percent().unwrap_or(0),
+        });
+        for achievement in &achievements.achievements {
+            if let Some(unlocked_at) = achievement.unlocked_at {
+                recent_unlocks.push(RecentUnlock {
+                    game_id: rom.id.clone(),
+                    game_name: rom.name.clone(),
+                    source: "retro".to_string(),
+                    achievement_title: achievement.title.clone(),
+                    achievement_description: achievement.description.clone(),
+                    icon_url: achievement.badge_url.clone(),
+                    points: achievement.points,
+                    unlocked_at,
+                });
+            }
+        }
+    }
+
+    if let Some(steam_id64) = state.steam_id64() {
+        for game in &state.games {
+            let game_id = game.app_id.to_string();
+            let Some(achievements) = state.steam_achievements_cache.get(&game_id, &steam_id64) else {
+                continue;
+            };
+            if achievements.total_count == 0 {
+                continue;
+            }
+            total_earned += achievements.earned_count;
+            total_possible += achievements.total_count;
+            games.push(GameAchievementSummary {
+                game_id: game_id.clone(),
+                game_name: game.name.clone(),
+                source: "steam".to_string(),
+                platform: None,
+                platform_key: None,
+                icon_url: None,
+                earned_count: achievements.earned_count,
+                total_count: achievements.total_count,
+                points_earned: 0,
+                points_total: 0,
+                completion_percent: achievements.completion_percent().unwrap_or(0),
+            });
+            for achievement in &achievements.achievements {
+                if let Some(unlocked_at) = achievement.unlocked_at {
+                    recent_unlocks.push(RecentUnlock {
+                        game_id: game_id.clone(),
+                        game_name: game.name.clone(),
+                        source: "steam".to_string(),
+                        achievement_title: achievement.title.clone(),
+                        achievement_description: achievement.description.clone(),
+                        icon_url: achievement.icon_url.clone(),
+                        points: 0,
+                        unlocked_at,
+                    });
+                }
+            }
+        }
+    }
+
+    games.sort_by(|a, b| {
+        b.completion_percent
+            .cmp(&a.completion_percent)
+            .then_with(|| a.game_name.cmp(&b.game_name))
+    });
+    recent_unlocks.sort_by(|a, b| b.unlocked_at.cmp(&a.unlocked_at));
+    recent_unlocks.truncate(RECENT_UNLOCKS_LIMIT);
+
+    AchievementsOverview {
+        total_earned,
+        total_possible,
+        total_points_earned,
+        total_points_possible,
+        games,
+        recent_unlocks,
+    }
+}
+
+/// Account-wide RetroAchievements rank/points for the Achievements screen's
+/// header. Unlike `get_achievements_overview`, this is a real network
+/// request — RA has no local cache for it — but it's cheap: one request,
+/// not one per game.
+#[tauri::command(async)]
+pub fn get_ra_profile_summary(state: State<AppStateHandle>) -> Result<Option<RaProfileSummary>, String> {
+    let settings = state.lock().unwrap_or_else(|e| e.into_inner()).store.settings();
+    let username = settings.ra_username.trim().to_string();
+    let api_key = settings.ra_api_key.trim().to_string();
+    if username.is_empty() || api_key.is_empty() {
+        return Ok(None);
+    }
+    retroachievements::fetch_profile_summary(&username, &api_key).map(Some)
+}
+
+/// Points RetroArch's own RetroAchievements engine (real-time unlock
+/// popups, hardcore mode) at the user's account for the platforms Wervik
+/// launches through a managed RetroArch install (Arcade, CPS, Neo Geo) —
+/// see `retro::native::set_retroarch_achievements`. Unrelated to the
+/// read-only viewer above: this never touches Wervik's own settings file,
+/// and the account password passed in is never stored by Wervik itself —
+/// only written into RetroArch's own config, which RetroArch immediately
+/// exchanges for a session token on next successful login.
+#[tauri::command(async)]
+pub fn apply_retroarch_achievements(
+    state: State<AppStateHandle>,
+    enabled: bool,
+    username: String,
+    password: String,
+    hardcore: bool,
+) -> Result<(), String> {
+    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
+    if enabled {
+        retro_native::enable_retroarch_achievements(&app_data_dir, &username, &password, hardcore)
+    } else {
+        retro_native::disable_retroarch_achievements(&app_data_dir)
+    }
+}
+
 #[tauri::command(async)]
 pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     // Re-detect Steam in case it was installed/moved since last scan.
     state.steam_install = discovery::find_steam_install();
     state.rescan();
@@ -1003,30 +1708,43 @@ pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
 
 #[tauri::command(async)]
 pub fn get_rom_directories(state: State<AppStateHandle>) -> Vec<String> {
-    state.lock().unwrap().store.rom_directories()
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.rom_directories()
 }
 
 #[tauri::command(async)]
 pub fn add_rom_directory(state: State<AppStateHandle>, path: String) -> LibrarySnapshot {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.store.add_rom_directory(path);
-    state.rescan_retro();
+    state.spawn_rom_scan();
     library_snapshot(&state)
 }
 
 #[tauri::command(async)]
 pub fn remove_rom_directory(state: State<AppStateHandle>, path: String) -> LibrarySnapshot {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.store.remove_rom_directory(&path);
-    state.rescan_retro();
+    state.spawn_rom_scan();
     library_snapshot(&state)
 }
 
 #[tauri::command(async)]
 pub fn rescan_retro_library(state: State<AppStateHandle>) -> LibrarySnapshot {
-    let mut state = state.lock().unwrap();
-    state.rescan_retro();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.spawn_rom_scan();
     library_snapshot(&state)
+}
+
+/// Whether a ROM directory scan (see `spawn_rom_scan`) is currently
+/// running — polled once on mount the same way `get_metadata_progress`/
+/// `get_artwork_progress` are, in case the scan was already underway
+/// before the frontend subscribed to the `rom-scan-status` event.
+#[tauri::command(async)]
+pub fn get_rom_scan_status(state: State<AppStateHandle>) -> bool {
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .rom_scan_running
+        .load(Ordering::SeqCst)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1056,7 +1774,7 @@ pub fn launch_retro_game(
     id: String,
     variant_id: Option<String>,
 ) -> Result<RetroLaunch, String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let rom = state
         .rom_games
         .iter()
@@ -1195,7 +1913,7 @@ pub fn stop_retro_session(
     session_id: String,
     _minutes_played: u64,
 ) -> Result<(), String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let Some((_game_id, running, playtime_session_id)) = state.retro_sessions.remove(&session_id)
     else {
         return Ok(());
@@ -1214,7 +1932,7 @@ pub fn stop_retro_session(
             finished.ended_at,
         );
     }
-    let _ = state.app_handle.emit("playtime-updated", ());
+    let _ = state.app_handle.emit("playtime-updated", &finished.game_id);
     Ok(())
 }
 
@@ -1223,7 +1941,7 @@ pub fn stop_retro_session(
 #[tauri::command(async)]
 pub fn open_rom_folder(state: State<AppStateHandle>, id: String) -> Result<(), String> {
     let (app, path) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let path = state
             .rom_games
             .iter()
@@ -1264,6 +1982,11 @@ pub struct PlatformStatus {
     pub requires_bios: bool,
     /// Shared BIOS path configured for this platform, if any.
     pub bios_path: Option<String>,
+    /// `"original"` or `"optimized"` (see `retro_native::apply_graphics_preset`)
+    /// for the platforms whose native RetroArch core can meaningfully
+    /// render above the original hardware's resolution — `None` for every
+    /// other platform, which has no such preset to offer at all.
+    pub graphics_preset: Option<String>,
 }
 
 /// One row per platform Wervik knows about (see `Platform::ALL`), for the
@@ -1272,7 +1995,7 @@ pub struct PlatformStatus {
 /// library for it.
 #[tauri::command(async)]
 pub fn get_platform_status(state: State<AppStateHandle>) -> Vec<PlatformStatus> {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     Platform::ALL
         .iter()
         .map(|&platform| PlatformStatus {
@@ -1298,8 +2021,29 @@ pub fn get_platform_status(state: State<AppStateHandle>) -> Vec<PlatformStatus> 
             ),
             requires_bios: platform.requires_bios(),
             bios_path: state.store.bios_path(platform.key()),
+            graphics_preset: retro_native::supports_graphics_preset(platform)
+                .then(|| state.store.graphics_preset(platform.key())),
         })
         .collect()
+}
+
+/// Sets a platform's graphics preset — see `PlatformStatus.graphicsPreset`
+/// and `retro_native::apply_graphics_preset` for what "optimized" actually
+/// changes. Errors for a platform with no preset to offer at all.
+#[tauri::command(async)]
+pub fn set_graphics_preset(
+    state: State<AppStateHandle>,
+    platform: String,
+    optimized: bool,
+) -> Result<(), String> {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let platform_enum = Platform::from_key(&platform)
+        .ok_or_else(|| format!("\"{platform}\" is not a known platform."))?;
+    retro_native::apply_graphics_preset(&state.app_data_dir, platform_enum, optimized)?;
+    state
+        .store
+        .set_graphics_preset(&platform, if optimized { "optimized" } else { "original" });
+    Ok(())
 }
 
 /// Sets the platform default emulator (see `PlatformStatus.selectedEmulator`).
@@ -1310,7 +2054,7 @@ pub fn get_platform_status(state: State<AppStateHandle>) -> Vec<PlatformStatus> 
 pub fn set_default_emulator(state: State<AppStateHandle>, platform: String, emulator_id: String) {
     state
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .store
         .set_default_emulator(&platform, &emulator_id);
 }
@@ -1326,7 +2070,7 @@ pub fn install_native_emulator(
     platform: String,
     emulator_id: String,
 ) -> Result<(), String> {
-    let app_data_dir = state.lock().unwrap().app_data_dir.clone();
+    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
     let platform = Platform::from_key(&platform)
         .ok_or_else(|| format!("\"{platform}\" is not a known platform."))?;
     retro_native::install(&app_data_dir, platform, &emulator_id)
@@ -1344,7 +2088,7 @@ pub fn open_native_emulator_settings(
     emulator_id: String,
 ) -> Result<(), String> {
     let (app_data_dir, emulator) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let platform_enum = Platform::from_key(&platform)
             .ok_or_else(|| format!("\"{platform}\" is not a known platform."))?;
         let emulator = retro_native::native_emulators_for(platform_enum)
@@ -1409,7 +2153,7 @@ pub fn get_platform_setup_status(
     state: State<AppStateHandle>,
     platform: String,
 ) -> PlatformSetupStatus {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     platform_setup_status(&state.game_setup_dir, &platform)
 }
 
@@ -1423,7 +2167,7 @@ pub fn apply_platform_setup(
     platform: String,
     input: GameSetupInput,
 ) -> Result<PlatformSetupStatus, String> {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &state.game_setup_dir;
 
     mangohud::write_config(dir, &platform, &input.mangohud_config)?;
@@ -1438,7 +2182,7 @@ pub fn apply_platform_setup(
 
 #[tauri::command(async)]
 pub fn get_bios_path(state: State<AppStateHandle>, platform: String) -> Option<String> {
-    state.lock().unwrap().store.bios_path(&platform)
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.bios_path(&platform)
 }
 
 /// Copies the user-selected BIOS file into Wervik's own app data directory
@@ -1450,7 +2194,7 @@ pub fn set_bios_path(
     platform: String,
     source_path: String,
 ) -> Result<String, String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let dest = bios::install(&state.app_data_dir.clone(), Path::new(&source_path))?;
     let dest_str = dest.to_string_lossy().to_string();
     state.store.set_bios_path(&platform, Some(dest_str.clone()));
@@ -1459,12 +2203,15 @@ pub fn set_bios_path(
 
 #[tauri::command(async)]
 pub fn clear_bios_path(state: State<AppStateHandle>, platform: String) {
-    state.lock().unwrap().store.set_bios_path(&platform, None);
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.set_bios_path(&platform, None);
 }
 
 #[tauri::command(async)]
 pub fn launch_game(state: State<AppStateHandle>, app_id: u32) -> Result<(), String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.games.iter().any(|game| game.app_id == app_id) {
+        return Err("This Steam game is not installed yet. Use Install first.".into());
+    }
     let launch_kind = {
         let launch_kind = state
             .steam_install
@@ -1501,12 +2248,44 @@ pub fn launch_game(state: State<AppStateHandle>, app_id: u32) -> Result<(), Stri
     Ok(())
 }
 
+#[tauri::command(async)]
+pub fn install_steam_game(state: State<AppStateHandle>, app_id: u32) -> Result<(), String> {
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.games.iter().any(|game| game.app_id == app_id) {
+        return Err("This Steam game is already installed.".into());
+    }
+    if !state
+        .steam_owned_games
+        .iter()
+        .any(|game| game.app_id == app_id)
+    {
+        return Err(
+            "Steam game not found in the owned games list. Try rescanning your library.".into(),
+        );
+    }
+    let launch_kind = state
+        .steam_install
+        .as_ref()
+        .map(|install| install.launch_kind)
+        .unwrap_or_else(|| {
+            #[cfg(target_os = "windows")]
+            {
+                LaunchKind::Windows
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                LaunchKind::Native
+            }
+        });
+    launch::install(&state.app_handle, app_id, launch_kind)
+}
+
 /// Launches a locally installed Xbox App / PC Game Pass title through its
 /// Windows AppUserModelID. The ID comes from the local app registration scan,
 /// so this does not need access to the protected game executable directory.
 #[tauri::command(async)]
 pub fn launch_xbox_game(state: State<AppStateHandle>, id: String) -> Result<(), String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let (aumid, install_dir, name) = state
         .xbox_games
         .iter()
@@ -1530,7 +2309,7 @@ pub fn launch_xbox_game(state: State<AppStateHandle>, id: String) -> Result<(), 
 /// Launches an installed Battle.net title through the Battle.net client.
 #[tauri::command(async)]
 pub fn launch_battlenet_game(state: State<AppStateHandle>, id: String) -> Result<(), String> {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let (product_code, install_dir, name) = state
         .battlenet_games
         .iter()
@@ -1551,10 +2330,34 @@ pub fn launch_battlenet_game(state: State<AppStateHandle>, id: String) -> Result
     Ok(())
 }
 
+/// Launches an installed EA App title through the EA client.
+#[tauri::command(async)]
+pub fn launch_ea_game(state: State<AppStateHandle>, id: String) -> Result<(), String> {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let (launch_id, install_dir, name) = state
+        .ea_games
+        .iter()
+        .find(|game| game.id == id)
+        .map(|game| {
+            (
+                game.launch_id.clone(),
+                game.install_dir.clone(),
+                game.name.clone(),
+            )
+        })
+        .ok_or_else(|| "EA game not found. Try rescanning your library.".to_string())?;
+    crate::ea::launch::launch(&state.app_handle, &launch_id)?;
+    state.store.record_local_launch(&id, now_unix());
+    if let Err(error) = start_process_session(&mut state, &id, "ea", &install_dir) {
+        eprintln!("Could not start EA playtime tracking for {name}: {error}");
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn open_steam_page(state: State<AppStateHandle>, app_id: u32) -> Result<(), String> {
     let (app, launch_kind) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let launch_kind = state
             .steam_install
             .as_ref()
@@ -1578,7 +2381,7 @@ pub fn open_steam_page(state: State<AppStateHandle>, app_id: u32) -> Result<(), 
 /// and retro games since favorites are tracked across sources.
 #[tauri::command(async)]
 pub fn set_favorite(state: State<AppStateHandle>, id: String, favorite: bool) {
-    let mut state = state.lock().unwrap();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.store.set_favorite(&id, favorite);
 }
 
@@ -1596,13 +2399,13 @@ pub fn set_game_reaction(
             return Err("Game reaction must be like or dislike".into());
         }
     }
-    state.lock().unwrap().store.set_game_reaction(&id, reaction);
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.set_game_reaction(&id, reaction);
     Ok(())
 }
 
 #[tauri::command(async)]
 pub fn get_settings(state: State<AppStateHandle>) -> Settings {
-    state.lock().unwrap().store.settings()
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.settings()
 }
 
 #[tauri::command(async)]
@@ -1622,16 +2425,61 @@ pub fn set_settings(
             autostart.disable().map_err(|e| e.to_string())?;
         }
     }
-    let _ = &app;
-    state.lock().unwrap().store.set_settings(settings);
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = state.store.settings();
+    let credentials_changed = previous.igdb_client_id != settings.igdb_client_id
+        || previous.igdb_client_secret != settings.igdb_client_secret;
+    let ra_credentials_changed =
+        previous.ra_username != settings.ra_username || previous.ra_api_key != settings.ra_api_key;
+    let steam_credentials_changed = previous.steam_api_key != settings.steam_api_key
+        || previous.steam_id64_override != settings.steam_id64_override;
+    state.store.set_settings(settings);
+    // Lets IGDB enrichment (metadata + retro cover art) start immediately
+    // after the user pastes credentials into Settings, rather than only on
+    // the next rescan or app restart.
+    if credentials_changed {
+        state.start_metadata_fetch();
+    }
+    if ra_credentials_changed {
+        state.start_achievements_fetch();
+    }
+    if steam_credentials_changed {
+        let _ = app.emit("steam-owned-games-updated", ());
+        let _ = app.emit("steam-achievements-settings-updated", ());
+        state.start_steam_owned_fetch();
+        state.start_steam_achievements_fetch();
+    }
     Ok(())
+}
+
+/// Every cover/hero/logo/screenshot path Wervik currently knows about for
+/// the discovered library, across every source — the allowlist
+/// `read_image` checks against.
+fn known_image_paths(state: &AppState) -> std::collections::HashSet<String> {
+    let mut paths = std::collections::HashSet::new();
+    for game in library_snapshot(state).games {
+        paths.extend([game.cover_path, game.hero_path, game.logo_path].into_iter().flatten());
+    }
+    for metadata in state.metadata_cache.values() {
+        paths.extend([metadata.cover_path.clone(), metadata.hero_path.clone()].into_iter().flatten());
+        paths.extend(metadata.screenshot_paths.iter().cloned());
+    }
+    paths
 }
 
 /// Reads an image file from disk and returns it as a data: URL, so the
 /// frontend can display Steam artwork without needing filesystem-scope
 /// asset-protocol configuration for arbitrary, runtime-discovered paths.
+///
+/// `path` must be exactly one of the cover/hero/logo/screenshot paths
+/// Wervik itself already surfaced for a known game (see
+/// `known_image_paths`) — this command is a display helper, not a general
+/// file-read primitive callable from the webview with an arbitrary path.
 #[tauri::command(async)]
-pub fn read_image(path: String) -> Result<String, String> {
+pub fn read_image(state: State<AppStateHandle>, path: String) -> Result<String, String> {
+    if !known_image_paths(&state.lock().unwrap_or_else(|e| e.into_inner())).contains(&path) {
+        return Err("Not a known game image path".into());
+    }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let mime = if path.to_lowercase().ends_with(".png") {
         "image/png"
@@ -1646,7 +2494,7 @@ pub fn read_image(path: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn open_install_folder(state: State<AppStateHandle>, app_id: u32) -> Result<(), String> {
     let (app, path) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let path = state
             .games
             .iter()
@@ -1664,7 +2512,7 @@ pub fn open_install_folder(state: State<AppStateHandle>, app_id: u32) -> Result<
 #[tauri::command(async)]
 pub fn open_xbox_folder(state: State<AppStateHandle>, id: String) -> Result<(), String> {
     let (app, path) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let path = state
             .xbox_games
             .iter()
@@ -1682,7 +2530,7 @@ pub fn open_xbox_folder(state: State<AppStateHandle>, id: String) -> Result<(), 
 #[tauri::command(async)]
 pub fn open_battlenet_folder(state: State<AppStateHandle>, id: String) -> Result<(), String> {
     let (app, path) = {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let path = state
             .battlenet_games
             .iter()
@@ -1692,6 +2540,24 @@ pub fn open_battlenet_folder(state: State<AppStateHandle>, id: String) -> Result
     };
     let Some(path) = path else {
         return Err("Battle.net game not found".into());
+    };
+    platform::open_path(&app, &path)
+}
+
+/// Opens the install directory of a locally discovered EA App game.
+#[tauri::command(async)]
+pub fn open_ea_folder(state: State<AppStateHandle>, id: String) -> Result<(), String> {
+    let (app, path) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let path = state
+            .ea_games
+            .iter()
+            .find(|game| game.id == id)
+            .map(|game| game.install_dir.clone());
+        (state.app_handle.clone(), path)
+    };
+    let Some(path) = path else {
+        return Err("EA game not found".into());
     };
     platform::open_path(&app, &path)
 }
@@ -1706,7 +2572,7 @@ pub fn open_nexus_mod(state: State<AppStateHandle>, url: String) -> Result<(), S
     if !valid_host {
         return Err("Invalid Nexus Mods URL".into());
     }
-    let app = state.lock().unwrap().app_handle.clone();
+    let app = state.lock().unwrap_or_else(|e| e.into_inner()).app_handle.clone();
     platform::open_url(&app, &url)
 }
 
@@ -1776,7 +2642,7 @@ fn game_setup_status(state: &AppState, app_id: u32) -> GameSetupStatus {
 /// snippet into Steam yet (a "Check again" button re-calls this).
 #[tauri::command(async)]
 pub fn get_game_setup_status(state: State<AppStateHandle>, app_id: u32) -> GameSetupStatus {
-    game_setup_status(&state.lock().unwrap(), app_id)
+    game_setup_status(&state.lock().unwrap_or_else(|e| e.into_inner()), app_id)
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1800,7 +2666,7 @@ pub fn apply_game_setup(
     app_id: u32,
     input: GameSetupInput,
 ) -> Result<GameSetupStatus, String> {
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     let dir = &state.game_setup_dir;
     let key = app_id.to_string();
 

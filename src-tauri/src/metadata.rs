@@ -16,6 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use ureq::Agent;
 
 use crate::commands::AppStateHandle;
+use crate::retro::platform::Platform;
 
 const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 24 * 30;
 const MAX_SCREENSHOTS: usize = 4;
@@ -46,6 +47,12 @@ pub struct GameMetadata {
 pub struct MetadataQuery {
     pub id: String,
     pub name: String,
+    /// The ROM's known platform, when this query is for a ROM — `None` for
+    /// Steam/Xbox/Battle.net/EA titles, which only ever run on one platform
+    /// (the current PC) so there's nothing to disambiguate. Lets
+    /// `choose_result` reject an IGDB match on the wrong platform (e.g. a
+    /// SNES game vs. a same-titled remake on another system).
+    pub platform: Option<Platform>,
 }
 
 #[derive(Default)]
@@ -103,6 +110,12 @@ impl MetadataCache {
         self.entries.get(game_id).cloned()
     }
 
+    /// Every cached entry — used to build the allowlist of image paths
+    /// `commands::read_image` may serve (see its doc comment).
+    pub fn values(&self) -> impl Iterator<Item = &GameMetadata> {
+        self.entries.values()
+    }
+
     /// Returns the stable IGDB identity for every locally enriched game.
     /// Callers use this to reconcile source-specific ROM ids without making
     /// another network request.
@@ -127,6 +140,24 @@ impl MetadataCache {
 
     pub fn mark_miss(&mut self, game_id: String) -> Result<(), String> {
         self.misses.insert(game_id, now_unix());
+        self.persist()
+    }
+
+    /// Drops every cached entry and miss so the next metadata fetch starts
+    /// clean — used by "Refresh metadata" in Settings so a game that was
+    /// mismatched under old (platform-blind) matching logic gets re-looked-up
+    /// instead of being treated as already fresh.
+    pub fn clear(&mut self) -> Result<(), String> {
+        self.entries.clear();
+        self.misses.clear();
+        self.persist()
+    }
+
+    /// Same as `clear`, but for a single game — the per-game "Refresh
+    /// metadata" action on the game details page.
+    pub fn remove(&mut self, game_id: &str) -> Result<(), String> {
+        self.entries.remove(game_id);
+        self.misses.remove(game_id);
         self.persist()
     }
 
@@ -201,7 +232,14 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-fn credentials() -> Option<(String, String)> {
+/// Prefers the credentials entered in Settings when both fields are set;
+/// otherwise falls back to the `WERVIK_IGDB_CLIENT_ID`/
+/// `WERVIK_IGDB_CLIENT_SECRET` environment variables documented for
+/// developers running from source.
+fn credentials(stored_client_id: &str, stored_client_secret: &str) -> Option<(String, String)> {
+    if !stored_client_id.trim().is_empty() && !stored_client_secret.trim().is_empty() {
+        return Some((stored_client_id.to_string(), stored_client_secret.to_string()));
+    }
     let client_id = std::env::var("WERVIK_IGDB_CLIENT_ID").ok()?;
     let client_secret = std::env::var("WERVIK_IGDB_CLIENT_SECRET").ok()?;
     if client_id.trim().is_empty() || client_secret.trim().is_empty() {
@@ -213,8 +251,8 @@ fn credentials() -> Option<(String, String)> {
 /// Whether IGDB enrichment is available for this process. Retro artwork uses
 /// this to decide whether libretro-thumbnails should remain as a fallback or
 /// whether IGDB is the single primary cover source.
-pub fn is_configured() -> bool {
-    credentials().is_some()
+pub fn is_configured(stored_client_id: &str, stored_client_secret: &str) -> bool {
+    credentials(stored_client_id, stored_client_secret).is_some()
 }
 
 fn new_agent() -> Agent {
@@ -277,20 +315,52 @@ fn normalized(value: &str) -> String {
         .collect()
 }
 
-fn choose_result(mut results: Vec<IgdbGame>, requested_name: &str) -> Option<IgdbGame> {
+/// 0 when one of `result_platforms` names is (loosely) this platform, 2 when
+/// IGDB reported platforms and none of them are it, 1 when IGDB reported no
+/// platforms at all — kept worse than an actual match but no worse than an
+/// unconfirmed one, since a missing field isn't evidence of a mismatch.
+fn platform_rank(result_platforms: &[IgdbNamedObject], expected: Option<Platform>) -> u8 {
+    let Some(expected) = expected else { return 1 };
+    if result_platforms.is_empty() {
+        return 1;
+    }
+    let known_names = expected.igdb_names();
+    let matches = result_platforms.iter().any(|platform| {
+        let Some(name) = platform.name.as_deref() else {
+            return false;
+        };
+        let normalized_name = normalized(name);
+        known_names
+            .iter()
+            .any(|known| normalized(known) == normalized_name)
+    });
+    if matches {
+        0
+    } else {
+        2
+    }
+}
+
+fn choose_result(
+    mut results: Vec<IgdbGame>,
+    requested_name: &str,
+    expected_platform: Option<Platform>,
+) -> Option<IgdbGame> {
     if results.is_empty() {
         return None;
     }
     let requested = normalized(requested_name);
     results.sort_by_key(|game| {
         let title = game.name.as_deref().map(normalized).unwrap_or_default();
-        if title == requested {
+        let title_rank = if title == requested {
             0
         } else if title.starts_with(&requested) || requested.starts_with(&title) {
             1
         } else {
             2
-        }
+        };
+        let platform_rank = platform_rank(game.platforms.as_deref().unwrap_or(&[]), expected_platform);
+        (platform_rank, title_rank)
     });
     results.into_iter().next()
 }
@@ -358,7 +428,7 @@ fn should_skip(app_handle: &AppHandle, game_id: &str) -> bool {
     app_handle
         .try_state::<AppStateHandle>()
         .map(|state| {
-            let state = state.lock().unwrap();
+            let state = state.lock().unwrap_or_else(|e| e.into_inner());
             state
                 .metadata_cache
                 .get(game_id)
@@ -375,8 +445,12 @@ pub fn fetch_game(
     app_data_dir: &Path,
     game_id: &str,
     game_name: &str,
+    platform: Option<Platform>,
+    stored_client_id: &str,
+    stored_client_secret: &str,
 ) -> Result<Option<GameMetadata>, String> {
-    let Some((client_id, client_secret)) = credentials() else {
+    let Some((client_id, client_secret)) = credentials(stored_client_id, stored_client_secret)
+    else {
         return Ok(None);
     };
 
@@ -389,6 +463,7 @@ pub fn fetch_game(
         app_data_dir,
         game_id,
         game_name,
+        platform,
     )
 }
 
@@ -399,6 +474,7 @@ fn fetch_game_with_token(
     app_data_dir: &Path,
     game_id: &str,
     game_name: &str,
+    platform: Option<Platform>,
 ) -> Result<Option<GameMetadata>, String> {
     let mut matched_game = None;
     let search_names = search_names(game_name);
@@ -415,7 +491,7 @@ fn fetch_game_with_token(
             .body_mut()
             .read_json::<Vec<IgdbGame>>()
             .map_err(|e| format!("Could not read IGDB game data: {e}"))?;
-        if let Some(game) = choose_result(results, &search_name) {
+        if let Some(game) = choose_result(results, &search_name, platform) {
             matched_game = Some(game);
             break;
         }
@@ -493,6 +569,39 @@ fn fetch_game_with_token(
     }))
 }
 
+/// Deletes every downloaded cover/screenshot alongside a `MetadataCache::clear`
+/// call — otherwise `download_image`'s "file already on disk" shortcut would
+/// keep serving art fetched for an old, possibly wrong, IGDB match instead of
+/// redownloading it for whatever match "Refresh metadata" finds this time.
+pub fn clear_artwork(app_data_dir: &Path) -> Result<(), String> {
+    let artwork_dir = app_data_dir.join("igdb-artwork");
+    match std::fs::remove_dir_all(&artwork_dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Same as `clear_artwork`, but for a single game's own files — the per-game
+/// "Refresh metadata" action, which can't just wipe the whole shared
+/// artwork directory.
+pub fn clear_artwork_for(app_data_dir: &Path, game_id: &str) -> Result<(), String> {
+    let artwork_dir = app_data_dir.join("igdb-artwork");
+    let key = safe_cache_key(game_id);
+    let mut paths = vec![artwork_dir.join(format!("{key}-cover.jpg"))];
+    for index in 0..MAX_SCREENSHOTS {
+        paths.push(artwork_dir.join(format!("{key}-screenshot-{index}.jpg")));
+    }
+    for path in paths {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(())
+}
+
 /// Updates every installed title in the background. Positive results and
 /// misses are persisted, while transport/API errors are left retryable for a
 /// later run. The delay keeps the worker below IGDB's public request limit and
@@ -503,6 +612,8 @@ pub fn spawn_fetch(
     games: Vec<MetadataQuery>,
     running: Arc<AtomicBool>,
     progress: Arc<MetadataProgressState>,
+    stored_client_id: String,
+    stored_client_secret: String,
 ) {
     if running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -512,7 +623,7 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
-        let Some((client_id, client_secret)) = credentials() else {
+        let Some((client_id, client_secret)) = credentials(&stored_client_id, &stored_client_secret) else {
             progress.done.store(0, Ordering::SeqCst);
             progress.total.store(0, Ordering::SeqCst);
             running.store(false, Ordering::SeqCst);
@@ -545,10 +656,11 @@ pub fn spawn_fetch(
                 &app_data_dir,
                 &game.id,
                 &game.name,
+                game.platform,
             ) {
                 Ok(Some(metadata)) => {
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
-                        let mut state = state.lock().unwrap();
+                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
                             eprintln!("Could not save metadata for {}: {error}", game.name);
                         } else {
@@ -559,7 +671,7 @@ pub fn spawn_fetch(
                 }
                 Ok(None) => {
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
-                        let mut state = state.lock().unwrap();
+                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         if let Err(error) = state.metadata_cache.mark_miss(game.id.clone()) {
                             eprintln!("Could not save metadata miss for {}: {error}", game.name);
                         }
@@ -594,6 +706,60 @@ mod tests {
             search_names("A Plague Tale: Requiem - Windows"),
             vec!["A Plague Tale: Requiem - Windows", "A Plague Tale: Requiem"]
         );
+    }
+
+    /// The real bug this guards against: IGDB's own search ranked the
+    /// Switch "Star Fox" ahead of the SNES original for the query "Star
+    /// Fox", and with no platform disambiguation Wervik just took whichever
+    /// came first.
+    #[test]
+    fn choose_result_prefers_the_result_matching_the_roms_platform() {
+        let switch_star_fox = IgdbGame {
+            id: 1,
+            name: Some("Star Fox".to_string()),
+            slug: None,
+            url: None,
+            summary: None,
+            first_release_date: None,
+            cover: None,
+            screenshots: None,
+            genres: None,
+            platforms: Some(vec![IgdbNamedObject {
+                name: Some("Nintendo Switch".to_string()),
+            }]),
+            involved_companies: None,
+            rating: None,
+            rating_count: None,
+            aggregated_rating: None,
+            aggregated_rating_count: None,
+        };
+        let snes_star_fox = IgdbGame {
+            platforms: Some(vec![IgdbNamedObject {
+                name: Some("Super Nintendo Entertainment System (SNES)".to_string()),
+            }]),
+            ..IgdbGame {
+                id: 2,
+                name: Some("Star Fox".to_string()),
+                slug: None,
+                url: None,
+                summary: None,
+                first_release_date: None,
+                cover: None,
+                screenshots: None,
+                genres: None,
+                platforms: None,
+                involved_companies: None,
+                rating: None,
+                rating_count: None,
+                aggregated_rating: None,
+                aggregated_rating_count: None,
+            }
+        };
+
+        // IGDB returned the Switch game first, ahead of the SNES original.
+        let results = vec![switch_star_fox, snes_star_fox];
+        let chosen = choose_result(results, "Star Fox", Some(Platform::Snes)).unwrap();
+        assert_eq!(chosen.id, 2, "should have picked the SNES release, not the Switch one");
     }
 
     #[test]

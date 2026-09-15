@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Wervik",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "io.wergely.wervik",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -37,7 +37,7 @@
     },
     "category": "Game",
     "shortDescription": "Your games. One library.",
-    "longDescription": "Wervik is a fast, controller-friendly library for browsing and launching your installed Steam, Xbox App/Game Pass, Battle.net, and retro games on Windows.",
+    "longDescription": "Wervik is a fast, controller-friendly library for browsing and launching your installed Steam, Xbox App/Game Pass, Battle.net, EA App, and retro games on Windows.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

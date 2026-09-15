@@ -6,10 +6,9 @@ import styles from "./PlatformsView.module.css";
 
 interface PlatformsViewProps {
   onSelectPlatform: (platform: PlatformStatus) => void;
-  onBack: () => void;
 }
 
-export function PlatformsView({ onSelectPlatform, onBack }: PlatformsViewProps) {
+export function PlatformsView({ onSelectPlatform }: PlatformsViewProps) {
   const [platforms, setPlatforms] = useState<PlatformStatus[] | null>(null);
 
   useEffect(() => {
@@ -18,12 +17,7 @@ export function PlatformsView({ onSelectPlatform, onBack }: PlatformsViewProps) 
 
   return (
     <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <button type="button" className={styles.backButton} data-nav-item onClick={onBack}>
-          ← Back
-        </button>
-        <h1 className={styles.title}>Platforms</h1>
-      </div>
+      <h1 className={styles.title}>Platforms</h1>
 
       {platforms === null ? (
         <p className={styles.status}>Loading…</p>

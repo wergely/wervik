@@ -195,6 +195,42 @@ impl Platform {
         matches!(self, Platform::PlayStation | Platform::NeoGeoCd)
     }
 
+    /// The platform's own name(s) as they appear in IGDB's `platforms.name`
+    /// field, used only to disambiguate an IGDB title search against the
+    /// ROM's actual platform (see `metadata::choose_result`) — e.g. so a
+    /// SNES "Star Fox" search doesn't settle for the Switch "Star Fox"
+    /// entry just because IGDB ranked it first. Several platforms have more
+    /// than one real IGDB entry Wervik treats as equivalent (e.g. Famicom
+    /// alongside NES).
+    pub fn igdb_names(self) -> &'static [&'static str] {
+        match self {
+            Platform::Nes => &["Nintendo Entertainment System (NES)", "Family Computer"],
+            Platform::Snes => &[
+                "Super Nintendo Entertainment System (SNES)",
+                "Super Famicom",
+            ],
+            Platform::GameBoy => &["Game Boy"],
+            Platform::GameBoyColor => &["Game Boy Color"],
+            Platform::GameBoyAdvance => &["Game Boy Advance"],
+            Platform::MasterSystem => &["Sega Master System/Mark III"],
+            Platform::Genesis => &["Sega Mega Drive/Genesis"],
+            Platform::GameGear => &["Sega Game Gear"],
+            Platform::Sega32X => &["Sega 32X"],
+            Platform::PlayStation => &["PlayStation"],
+            Platform::Nintendo64 => &["Nintendo 64"],
+            Platform::Atari5200 => &["Atari 5200"],
+            Platform::Atari7800 => &["Atari 7800"],
+            Platform::AtariLynx => &["Atari Lynx"],
+            Platform::AtariJaguar => &["Atari Jaguar"],
+            Platform::WonderSwan => &["WonderSwan", "WonderSwan Color"],
+            Platform::NeoGeoPocket => &["Neo Geo Pocket", "Neo Geo Pocket Color"],
+            Platform::PcEngine => &["TurboGrafx-16/PC Engine", "TurboGrafx-16/PC Engine CD"],
+            Platform::ColecoVision => &["ColecoVision"],
+            Platform::Arcade => &["Arcade"],
+            Platform::NeoGeoCd => &["Neo Geo CD"],
+        }
+    }
+
     /// Maps an unambiguous file extension to its platform. `.bin` is
     /// deliberately excluded — it's ambiguous between a standalone Genesis
     /// ROM and a PlayStation disc track (and, per the real

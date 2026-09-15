@@ -18,6 +18,7 @@ const sourceOptions: readonly MultiSelectOption<GameSource>[] = [
   { value: "steam", label: "Steam" },
   { value: "xbox", label: "Xbox" },
   { value: "battlenet", label: "Battle.net" },
+  { value: "ea", label: "EA App" },
   { value: "retro", label: "Retro" },
 ];
 
@@ -39,6 +40,10 @@ function sortGames(games: Game[], mode: SortMode): Game[] {
       return sorted.sort((a, b) => (b.playtimeMinutes ?? 0) - (a.playtimeMinutes ?? 0));
     case "score":
       return sorted.sort((a, b) => (b.igdbScore ?? 0) - (a.igdbScore ?? 0));
+    case "completion":
+      // -1 (not "unknown" 0) so a real 0%-complete game still outranks one
+      // with no achievement data at all.
+      return sorted.sort((a, b) => (b.achievementCompletionPercent ?? -1) - (a.achievementCompletionPercent ?? -1));
     case "recent":
     default:
       return sorted.sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
@@ -417,6 +422,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
             <option value="recent">Recently played</option>
             <option value="playtime">Playtime</option>
             <option value="score">IGDB score</option>
+            <option value="completion">Completion %</option>
           </select>
           <button
             type="button"

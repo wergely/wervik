@@ -24,7 +24,7 @@ export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
       className={`${styles.card} ${size === "lg" ? styles.lg : ""}`}
       data-nav-item
       onClick={() => onSelect(game)}
-      aria-label={game.name}
+      aria-label={`${game.name}${game.isInstalled ? "" : " — Not installed"}`}
     >
       <div className={styles.art}>
         {url && !failed ? (
@@ -34,14 +34,32 @@ export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
             <span>{game.name}</span>
           </div>
         )}
-        <SourceBadge label={sourceLabel(game)} source={game.source} className={styles.sourceBadge} />
+        <SourceBadge
+          label={sourceLabel(game)}
+          source={game.source}
+          platformKey={game.platformKey}
+          className={styles.sourceBadge}
+        />
+        {!game.isInstalled && <div className={styles.notInstalledBadge}>Not installed</div>}
         {releaseYear(game) && <div className={styles.releaseYear}>{releaseYear(game)}</div>}
         {game.igdbScore != null && (
           <div className={styles.scoreBadge} aria-label={`IGDB score ${Math.round(game.igdbScore)}`}>
             ★ {Math.round(game.igdbScore)}
           </div>
         )}
-        {game.isFavorite && <div className={styles.favoriteBadge}>★</div>}
+        {(game.achievementCompletionPercent != null || game.isFavorite) && (
+          <div className={styles.topRightBadges}>
+            {game.achievementCompletionPercent != null && (
+              <div
+                className={styles.completionBadge}
+                aria-label={`Achievement completion: ${game.achievementCompletionPercent}%`}
+              >
+                🏆 {game.achievementCompletionPercent}%
+              </div>
+            )}
+            {game.isFavorite && <div className={styles.favoriteBadge}>★</div>}
+          </div>
+        )}
       </div>
       <div className={styles.title}>{game.name}</div>
     </button>

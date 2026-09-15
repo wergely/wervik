@@ -65,6 +65,41 @@ pub struct Settings {
     pub library_igdb_year_to: Option<u16>,
     #[serde(default)]
     pub library_igdb_metadata_only: bool,
+    /// Background chiptune player heard while browsing Home (see
+    /// `App.tsx`'s `useChiptunePlayer`) — generated locally, no audio
+    /// files or network involved.
+    #[serde(default = "default_music_enabled")]
+    pub music_enabled: bool,
+    #[serde(default = "default_music_volume")]
+    pub music_volume: f32,
+    /// IGDB credentials entered in Settings, as an alternative to the
+    /// `WERVIK_IGDB_CLIENT_ID`/`WERVIK_IGDB_CLIENT_SECRET` environment
+    /// variables (see `metadata::credentials`, which prefers these when
+    /// both are set). Stored in this same local, unsynced file — never
+    /// sent anywhere except to IGDB's own token endpoint.
+    #[serde(default)]
+    pub igdb_client_id: String,
+    #[serde(default)]
+    pub igdb_client_secret: String,
+    /// RetroAchievements username and Web API key (from the site's own
+    /// "Keys" control panel page) for the read-only achievements viewer —
+    /// see `retroachievements`. Unrelated to the account password used to
+    /// enable RetroArch's own live achievements (never persisted here).
+    #[serde(default)]
+    pub ra_username: String,
+    #[serde(default)]
+    pub ra_api_key: String,
+    /// Steam Web API key (from <https://steamcommunity.com/dev/apikey>)
+    /// for the same read-only achievements viewer, but for Steam games —
+    /// see `steam::achievements`. The account's SteamID64 is detected
+    /// automatically from the local Steam install and never stored here;
+    /// `steam_id64_override` is only a manual escape hatch for a machine
+    /// with more than one local account, if auto-detection ever picks the
+    /// wrong one.
+    #[serde(default)]
+    pub steam_api_key: String,
+    #[serde(default)]
+    pub steam_id64_override: String,
 }
 
 fn default_ui_scale() -> f32 {
@@ -79,6 +114,14 @@ fn default_library_sort_mode() -> String {
 
 fn default_all_filters() -> Vec<String> {
     Vec::new()
+}
+
+fn default_music_enabled() -> bool {
+    true
+}
+
+fn default_music_volume() -> f32 {
+    0.35
 }
 
 /// Accepts both the old single-value filter (`"retro"`) and the new array
@@ -124,6 +167,14 @@ impl Default for Settings {
             library_igdb_year_from: None,
             library_igdb_year_to: None,
             library_igdb_metadata_only: false,
+            music_enabled: default_music_enabled(),
+            music_volume: default_music_volume(),
+            igdb_client_id: String::new(),
+            igdb_client_secret: String::new(),
+            ra_username: String::new(),
+            ra_api_key: String::new(),
+            steam_api_key: String::new(),
+            steam_id64_override: String::new(),
         }
     }
 }
@@ -184,6 +235,11 @@ pub struct StoredState {
     platform_prefer_native: HashMap<String, bool>,
     #[serde(default)]
     platform_native_emulator: HashMap<String, String>,
+    /// Platform key -> `"original"` or `"optimized"` graphics preset (see
+    /// `retro::native::apply_graphics_preset`). Absent means `"original"` —
+    /// Wervik never applies a resolution bump the user didn't ask for.
+    #[serde(default)]
+    pub platform_graphics_preset: HashMap<String, String>,
 }
 
 pub struct Store {
@@ -390,6 +446,23 @@ impl Store {
         self.state
             .platform_default_emulator
             .insert(platform_key.to_string(), emulator_id.to_string());
+        self.persist();
+    }
+
+    /// `"original"` unless the user has explicitly chosen `"optimized"` for
+    /// this platform.
+    pub fn graphics_preset(&self, platform_key: &str) -> String {
+        self.state
+            .platform_graphics_preset
+            .get(platform_key)
+            .cloned()
+            .unwrap_or_else(|| "original".to_string())
+    }
+
+    pub fn set_graphics_preset(&mut self, platform_key: &str, preset: &str) {
+        self.state
+            .platform_graphics_preset
+            .insert(platform_key.to_string(), preset.to_string());
         self.persist();
     }
 }

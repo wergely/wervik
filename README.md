@@ -3,7 +3,7 @@
 Your games. One library.
 
 Wervik is a fast, controller-friendly Windows desktop library for browsing
-and launching your installed Steam, Xbox App/Game Pass, Battle.net, and retro games. It
+and launching your installed Steam, Xbox App/Game Pass, Battle.net, EA App, and retro games. It
 reads local library data directly and can optionally enrich the selected game's
 details through IGDB — no Wervik account or cloud library is required.
 
@@ -27,9 +27,10 @@ npm ci
 npm run tauri dev
 ```
 
-The first run should find Steam from the Windows registry and locally installed
-Xbox App/Game Pass titles from Windows app registration. Test launching a
-Steam game, an Xbox game and a Battle.net game, opening their install folders
+The first run should find Steam from the Windows registry, locally installed
+Xbox App/Game Pass titles from Windows app registration, and installed EA App
+games from the Windows registry. Test launching a Steam game, an Xbox game,
+a Battle.net game and an EA App game, opening their install folders
 and the Steam store page where applicable, then add a ROM folder in Settings
 and launch a retro game through the bundled EmulatorJS runtime.
 If Steam is installed in a portable or non-standard location, start PowerShell
@@ -94,3 +95,9 @@ Wervik keeps local playtime sessions in `wervik-playtime.sqlite3` under its
 application data directory. Existing retro and Steam playtime is imported as
 an initial baseline; new launches are tracked by monitoring the installed game
 process and are retained locally across restarts.
+
+## Credits
+
+- Platform/console icons: [KyleBing/retro-game-console-icons](https://github.com/KyleBing/retro-game-console-icons)
+  (GPL-3.0).
+- Steam/Battle.net/EA brand icons: [Simple Icons](https://simpleicons.org/) (CC0-1.0).

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { playMoveSound } from "../utils/sfx";
 import { findNextFocusTarget, type Direction } from "./spatialNav";
 
 const STICK_DEADZONE = 0.5;
@@ -27,7 +28,9 @@ function move(direction: Direction, scope: ParentNode) {
   const current = document.activeElement;
   if (!current) return;
   const next = findNextFocusTarget(current, direction, scope);
-  next?.focus();
+  if (!next) return;
+  next.focus();
+  playMoveSound();
 }
 
 function isTextEntry(el: Element | null): boolean {

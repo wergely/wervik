@@ -28,12 +28,14 @@
 .suggestionRow {
   display: flex;
   gap: 20px;
-  overflow-x: auto;
+  overflow: hidden;
   padding-bottom: 12px;
 }
 
 @media (max-width: 720px) {
-  .topRow { grid-template-columns: minmax(0, 1fr); }
+  /* Overrides the JS-computed column split (Home.tsx) below the window's
+     own 960px minimum width, in case that minimum ever changes. */
+  .topRow { grid-template-columns: minmax(0, 1fr) !important; }
 }
 
 .loading {

@@ -32,11 +32,25 @@ export function useLibrary() {
     const unlistenBattleNet = listen("battlenet-artwork-updated", refresh);
     const unlistenPlaytime = listen("playtime-updated", refresh);
     const unlistenMetadata = listen("metadata-updated", refresh);
+    const unlistenAchievements = listen("retro-achievements-updated", refresh);
+    const unlistenSteamAchievements = listen("steam-achievements-updated", refresh);
+    const unlistenSteamAchievementSettings = listen("steam-achievements-settings-updated", refresh);
+    const unlistenSteamOwnedGames = listen("steam-owned-games-updated", refresh);
+    // Fires when a ROM directory scan starts and again when it ends (see
+    // `commands::spawn_rom_scan`) — refreshing on both is harmless (the
+    // "starts" one is a no-op re-fetch of the same data) and means the
+    // library picks up the rescan the moment it's actually done.
+    const unlistenRomScan = listen("rom-scan-status", refresh);
     return () => {
       unlistenRetro.then((fn) => fn());
       unlistenBattleNet.then((fn) => fn());
       unlistenPlaytime.then((fn) => fn());
       unlistenMetadata.then((fn) => fn());
+      unlistenAchievements.then((fn) => fn());
+      unlistenSteamAchievements.then((fn) => fn());
+      unlistenSteamAchievementSettings.then((fn) => fn());
+      unlistenSteamOwnedGames.then((fn) => fn());
+      unlistenRomScan.then((fn) => fn());
     };
   }, []);
 

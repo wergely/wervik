@@ -1,4 +1,4 @@
-export type GameSource = "steam" | "retro" | "xbox" | "battlenet";
+export type GameSource = "steam" | "retro" | "xbox" | "battlenet" | "ea";
 export type GameReaction = "like" | "dislike";
 
 export interface Game {
@@ -7,6 +7,8 @@ export interface Game {
   id: string;
   source: GameSource;
   name: string;
+  /** `false` only for Steam games owned by the account but not installed. */
+  isInstalled: boolean;
   installDir: string;
   libraryPath: string;
   sizeOnDiskBytes: number;
@@ -25,6 +27,8 @@ export interface Game {
   xboxAppId: string | null;
   /** Present only when `source === "battlenet"`; Battle.net product code. */
   battlenetProductCode: string | null;
+  /** Present only when `source === "ea"`; EA App content/offer id. */
+  eaGameId: string | null;
   /** Short platform label (e.g. "SNES"), present only when `source === "retro"`. */
   platform: string | null;
   /** Stable machine key (see `PlatformStatus.key`) for joining against the
@@ -41,6 +45,12 @@ export interface Game {
   /** Other regional dumps of this same game the user can play instead
    * (see `launchRetroGame`'s `variantId`) — empty for Steam games. */
   variants: GameVariant[];
+  /** Achievement completion percentage — RetroAchievements for a retro
+   * game, the Steam Web API for a Steam one — from whatever the relevant
+   * background sweep has cached so far. `null` for Xbox/Battle.net, when
+   * the relevant credentials aren't configured, or before a match/result
+   * is cached yet. */
+  achievementCompletionPercent: number | null;
 }
 
 export interface GameVariant {
@@ -76,11 +86,95 @@ export interface NexusMod {
   modPageUrl: string;
 }
 
+export interface RaAchievement {
+  id: number;
+  title: string;
+  description: string;
+  points: number;
+  badgeUrl: string;
+  unlocked: boolean;
+  unlockedHardcore: boolean;
+  unlockedAt: number | null;
+}
+
+export interface RaGameAchievements {
+  gameTitle: string;
+  consoleName: string;
+  iconUrl: string | null;
+  earnedCount: number;
+  totalCount: number;
+  pointsEarned: number;
+  pointsTotal: number;
+  achievements: RaAchievement[];
+}
+
+/** Steam's own achievements have no point value or hardcore-mode concept
+ * — unlike `RaAchievement`, this is the complete shape. */
+export interface SteamAchievement {
+  id: string;
+  title: string;
+  description: string;
+  iconUrl: string;
+  unlocked: boolean;
+  unlockedAt: number | null;
+}
+
+export interface SteamGameAchievements {
+  earnedCount: number;
+  totalCount: number;
+  achievements: SteamAchievement[];
+}
+
+export type AchievementSource = "retro" | "steam";
+
+export interface GameAchievementSummary {
+  gameId: string;
+  gameName: string;
+  source: AchievementSource;
+  platform: string | null;
+  platformKey: string | null;
+  iconUrl: string | null;
+  earnedCount: number;
+  totalCount: number;
+  pointsEarned: number;
+  pointsTotal: number;
+  completionPercent: number;
+}
+
+export interface RecentUnlock {
+  gameId: string;
+  gameName: string;
+  source: AchievementSource;
+  achievementTitle: string;
+  achievementDescription: string;
+  iconUrl: string;
+  points: number;
+  unlockedAt: number;
+}
+
+export interface AchievementsOverview {
+  totalEarned: number;
+  totalPossible: number;
+  totalPointsEarned: number;
+  totalPointsPossible: number;
+  games: GameAchievementSummary[];
+  recentUnlocks: RecentUnlock[];
+}
+
+export interface RaProfileSummary {
+  username: string;
+  avatarUrl: string | null;
+  rank: number;
+  totalPoints: number;
+  totalTruePoints: number;
+}
+
 export interface LibrarySnapshot {
   steamFound: boolean;
   steamRoot: string | null;
   xboxFound: boolean;
   battlenetFound: boolean;
+  eaFound: boolean;
   libraryFolders: string[];
   games: Game[];
 }
@@ -105,9 +199,34 @@ export interface Settings {
   libraryIgdbYearFrom: number | null;
   libraryIgdbYearTo: number | null;
   libraryIgdbMetadataOnly: boolean;
+  /** Background chiptune player heard while browsing Home — see
+   * `useChiptunePlayer`. Generated locally; no audio files or network. */
+  musicEnabled: boolean;
+  /** 0–1. */
+  musicVolume: number;
+  /** IGDB credentials entered in Settings, as an alternative to the
+   * WERVIK_IGDB_CLIENT_ID/SECRET environment variables — see the Rust
+   * `metadata::credentials`, which prefers these when both are set. */
+  igdbClientId: string;
+  igdbClientSecret: string;
+  /** RetroAchievements username and Web API key (from the site's own
+   * "Keys" control panel page) for the read-only achievements viewer.
+   * Unrelated to the account password used to enable real achievements in
+   * RetroArch — that's never persisted here. */
+  raUsername: string;
+  raApiKey: string;
+  /** Steam Web API key (from steamcommunity.com/dev/apikey) for the same
+   * kind of read-only achievements viewer, but for Steam games — matched
+   * by the exact Steam app id, no fuzzy title guess needed. The account's
+   * SteamID64 is detected automatically from the local Steam install;
+   * `steamId64Override` is only a manual escape hatch if auto-detection
+   * ever picks the wrong one on a machine with more than one local
+   * account. */
+  steamApiKey: string;
+  steamId64Override: string;
 }
 
-export type SortMode = "recent" | "alphabetical" | "playtime" | "score";
+export type SortMode = "recent" | "alphabetical" | "playtime" | "score" | "completion";
 
 export interface GameMetadataSummary {
   igdbId: number;
@@ -227,6 +346,11 @@ export interface PlatformStatus {
   requiresBios: boolean;
   /** Shared BIOS path configured for this platform, if any. */
   biosPath: string | null;
+  /** `"original"` or `"optimized"` — only for the platforms whose native
+   * RetroArch core can meaningfully render above the original hardware's
+   * resolution (N64, PlayStation). `null` means this platform has no such
+   * preset to offer at all. */
+  graphicsPreset: string | null;
 }
 
 /** Progress of the background box-art fetch (see `retro::artwork`).

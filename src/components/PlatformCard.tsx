@@ -1,4 +1,5 @@
 import type { PlatformStatus } from "../types";
+import { PlatformIcon } from "./PlatformIcon";
 import styles from "./PlatformCard.module.css";
 
 interface PlatformCardProps {
@@ -21,7 +22,7 @@ export function PlatformCard({ platform, onSelect }: PlatformCardProps) {
           from one of the player's own games, which would make the same
           platform look different every rescan. */}
       <div className={styles.art}>
-        <span className={styles.monogram}>{platform.shortName}</span>
+        <PlatformIcon source="retro" platformKey={platform.key} size={56} />
       </div>
       <div className={styles.info}>
         <span className={styles.name}>{platform.displayName}</span>

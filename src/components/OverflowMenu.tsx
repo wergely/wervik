@@ -5,7 +5,7 @@ interface OverflowMenuProps {
   open: boolean;
   onOpen: () => void;
   onClose: () => void;
-  onShowFiles: () => void;
+  onShowFiles?: () => void;
   onOpenSteamPage?: () => void;
   registerBackHandler: (handler: (() => void) | null) => void;
   registerNavScope: (el: HTMLElement | null) => void;
@@ -69,18 +69,20 @@ export function OverflowMenu({
       </button>
       {open && (
         <div className={styles.menu} ref={menuRef} role="menu">
-          <button
-            type="button"
-            className={styles.item}
-            data-nav-item
-            role="menuitem"
-            onClick={() => {
-              onShowFiles();
-              onClose();
-            }}
-          >
-            📁 Show game files
-          </button>
+          {onShowFiles && (
+            <button
+              type="button"
+              className={styles.item}
+              data-nav-item
+              role="menuitem"
+              onClick={() => {
+                onShowFiles();
+                onClose();
+              }}
+            >
+              📁 Show game files
+            </button>
+          )}
           {onOpenSteamPage && (
             <button
               type="button"

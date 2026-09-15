@@ -1,5 +1,6 @@
 mod battlenet;
 mod commands;
+mod ea;
 mod game_setup;
 mod mangohud;
 mod metadata;
@@ -7,6 +8,7 @@ mod nexus;
 mod platform;
 mod playtime;
 mod retro;
+mod retroachievements;
 mod steam;
 mod storage;
 mod sysutil;
@@ -39,8 +41,20 @@ pub fn run() {
             let metadata_cache =
                 metadata::MetadataCache::load(&app_data_dir.join("wervik-metadata.json"));
             let nexus_cache = nexus::NexusCache::load(&app_data_dir.join("wervik-nexus.json"));
+            let retro_achievements_cache = retroachievements::RetroAchievementsCache::load(
+                &app_data_dir.join("wervik-retroachievements.json"),
+            );
+            let steam_achievements_cache = steam::achievements::SteamAchievementsCache::load(
+                &app_data_dir.join("wervik-steam-achievements.json"),
+            );
+            let steam_owned_games_cache = steam::owned::SteamOwnedGamesCache::load(
+                &app_data_dir.join("wervik-steam-owned-games.json"),
+            );
             let metadata_fetch_running = Arc::new(AtomicBool::new(false));
             let metadata_progress = Arc::new(metadata::MetadataProgressState::default());
+            let retro_achievements_fetch_running = Arc::new(AtomicBool::new(false));
+            let steam_achievements_fetch_running = Arc::new(AtomicBool::new(false));
+            let steam_owned_games_fetch_running = Arc::new(AtomicBool::new(false));
             for (game_id, legacy) in store.legacy_retro_playtime() {
                 let _ = playtime.seed_if_missing(
                     &game_id,
@@ -66,6 +80,7 @@ pub fn run() {
             };
             let xbox_games = xbox::discovery::scan();
             let battlenet_games = battlenet::discovery::scan();
+            let ea_games = ea::discovery::scan();
             let battlenet_artwork_running = Arc::new(AtomicBool::new(false));
 
             let mut rom_games = retro::cache::load(&app_data_dir);
@@ -92,6 +107,7 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let artwork_fetch_running = Arc::new(AtomicBool::new(false));
+            let rom_scan_running = Arc::new(AtomicBool::new(false));
             let artwork_progress = Arc::new(commands::ArtworkProgressState::default());
             // Picks up box art for anything the last scan left uncovered
             // (e.g. Wervik was closed before a previous fetch finished, or
@@ -99,7 +115,8 @@ pub fn run() {
             // When IGDB is configured it is the primary retro cover source;
             // libretro-thumbnails remains available as the no-credentials
             // fallback without downloading a second cover in parallel.
-            if !metadata::is_configured() {
+            let igdb_settings = store.settings();
+            if !metadata::is_configured(&igdb_settings.igdb_client_id, &igdb_settings.igdb_client_secret) {
                 commands::spawn_artwork_fetch(
                     app_handle.clone(),
                     app_data_dir.clone(),
@@ -121,16 +138,25 @@ pub fn run() {
                 games,
                 xbox_games,
                 battlenet_games,
+                ea_games,
                 battlenet_artwork_running,
                 playtime,
                 metadata_cache,
                 nexus_cache,
+                retro_achievements_cache,
+                retro_achievements_fetch_running,
+                steam_achievements_cache,
+                steam_achievements_fetch_running,
+                steam_owned_games_cache,
+                steam_owned_games: Vec::new(),
+                steam_owned_games_fetch_running,
                 metadata_fetch_running,
                 metadata_progress,
                 store,
                 game_setup_dir,
                 app_data_dir,
                 rom_games,
+                rom_scan_running,
                 retro_sessions: std::collections::HashMap::new(),
                 retro_runtime_dir,
                 app_handle,
@@ -139,18 +165,42 @@ pub fn run() {
             };
             state.seed_provider_playtime();
             state.dedupe_rom_games_by_metadata();
+            // Load the account-scoped owned-games cache before building the
+            // metadata queue, so cached non-installed titles get enriched on
+            // the same startup pass as locally installed games.
+            state.start_steam_owned_fetch();
             let metadata_queries = state.metadata_queries();
+            let achievement_queries = state.achievement_queries();
             let metadata_fetch_running = state.metadata_fetch_running.clone();
             let metadata_progress = state.metadata_progress.clone();
+            let achievements_fetch_running = state.retro_achievements_fetch_running.clone();
             let metadata_app_handle = state.app_handle.clone();
             let metadata_app_data_dir = state.app_data_dir.clone();
+            let metadata_settings = state.store.settings();
             app.manage(Mutex::new(state));
+            // Start this after the state is managed: the worker checks the
+            // current account/configuration before each request and needs to
+            // be able to see the managed state immediately.
+            if let Some(state) = app.try_state::<Mutex<AppState>>() {
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state.start_steam_owned_fetch();
+                state.start_steam_achievements_fetch();
+            }
             metadata::spawn_fetch(
-                metadata_app_handle,
+                metadata_app_handle.clone(),
                 metadata_app_data_dir,
                 metadata_queries,
                 metadata_fetch_running,
                 metadata_progress,
+                metadata_settings.igdb_client_id,
+                metadata_settings.igdb_client_secret,
+            );
+            retroachievements::spawn_fetch(
+                metadata_app_handle,
+                achievement_queries,
+                metadata_settings.ra_username,
+                metadata_settings.ra_api_key,
+                achievements_fetch_running,
             );
 
             Ok(())
@@ -158,14 +208,23 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_library,
             commands::get_game_metadata,
+            commands::refresh_game_metadata,
             commands::get_nexus_mods,
+            commands::get_retro_achievements,
+            commands::get_achievements_overview,
+            commands::get_ra_profile_summary,
+            commands::get_steam_achievements,
+            commands::apply_retroarch_achievements,
             commands::rescan_library,
             commands::get_artwork_progress,
             commands::get_metadata_progress,
+            commands::refresh_all_metadata,
             commands::fetch_cover_now,
             commands::launch_game,
+            commands::install_steam_game,
             commands::launch_xbox_game,
             commands::launch_battlenet_game,
+            commands::launch_ea_game,
             commands::set_favorite,
             commands::set_game_reaction,
             commands::get_settings,
@@ -174,6 +233,7 @@ pub fn run() {
             commands::open_install_folder,
             commands::open_xbox_folder,
             commands::open_battlenet_folder,
+            commands::open_ea_folder,
             commands::open_nexus_mod,
             commands::open_steam_page,
             commands::get_game_setup_status,
@@ -182,10 +242,12 @@ pub fn run() {
             commands::add_rom_directory,
             commands::remove_rom_directory,
             commands::rescan_retro_library,
+            commands::get_rom_scan_status,
             commands::launch_retro_game,
             commands::stop_retro_session,
             commands::get_platform_status,
             commands::set_default_emulator,
+            commands::set_graphics_preset,
             commands::install_native_emulator,
             commands::open_native_emulator_settings,
             commands::get_platform_setup_status,

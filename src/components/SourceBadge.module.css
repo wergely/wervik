@@ -22,14 +22,8 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
 }
 
-.badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: var(--badge-accent);
-  box-shadow: 0 0 8px var(--badge-accent);
+.icon {
+  filter: drop-shadow(0 0 4px var(--badge-accent));
 }
 
 .steam {
@@ -48,6 +42,12 @@
   --badge-accent: #62a9ff;
   --badge-tint: rgba(98, 169, 255, 0.2);
   --badge-border: rgba(98, 169, 255, 0.74);
+}
+
+.ea {
+  --badge-accent: #f26a2e;
+  --badge-tint: rgba(242, 106, 46, 0.2);
+  --badge-border: rgba(242, 106, 46, 0.74);
 }
 
 .retro {

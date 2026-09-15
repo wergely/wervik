@@ -61,6 +61,10 @@
   line-height: 1.25;
   color: var(--text);
   display: -webkit-box;
+  /* Always reserves 2 lines of height (2.5em = 1.25 line-height * 2), even
+     for a one-line title, so cards stay the same height across the grid
+     regardless of name length. */
+  height: 2.5em;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
@@ -71,6 +75,20 @@
   position: absolute;
   top: 8px;
   left: 8px;
+}
+
+.notInstalledBadge {
+  position: absolute;
+  top: 42px;
+  left: 8px;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(9, 11, 16, 0.78);
+  backdrop-filter: blur(4px);
+  color: var(--yellow, #ffd166);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .releaseYear,

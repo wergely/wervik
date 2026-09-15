@@ -93,12 +93,32 @@
   max-width: 760px;
   max-height: calc(100vh - 96px);
   overflow-y: auto;
-  padding-right: 8px;
+  /* A translucent card of its own, rather than text sitting straight on
+     the hero image — the scrim gradient alone wasn't enough contrast for
+     a busy screenshot, especially with as much text as a fully metadata-
+     and-achievements-loaded game can have. */
+  background: rgba(9, 11, 16, 0.6);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-lg);
+  padding: 22px 26px;
 }
 
 .sourceBadge {
   display: inline-flex;
   margin-bottom: 10px;
+}
+
+.notInstalled {
+  display: inline-flex;
+  margin: 0 0 10px 8px;
+  border: 1px solid rgba(255, 209, 102, 0.4);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--yellow, #ffd166);
+  font-size: 0.72rem;
+  font-weight: 700;
+  vertical-align: middle;
 }
 
 .title {
@@ -149,6 +169,12 @@
   line-height: 1.55;
   margin: -8px 0 18px;
   max-width: 700px;
+  /* ~4 lines (line-height * 4) before it scrolls internally instead of
+     pushing the rest of the page down — some IGDB summaries run several
+     paragraphs long. */
+  max-height: 6.2em;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .metadataFacts {
@@ -389,6 +415,43 @@
   font-size: 0.72rem;
   margin-top: 10px;
   opacity: 0.8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.metadataRefreshButton {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 1;
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+
+.metadataRefreshButton:hover:not(:disabled),
+.metadataRefreshButton:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+  transform: rotate(45deg);
+}
+
+.metadataRefreshButton:disabled {
+  opacity: 0.6;
+}
+
+.metadataRefreshButton:focus-visible {
+  box-shadow: var(--shadow-focus);
 }
 
 .nexusSection {
@@ -486,6 +549,147 @@
   opacity: 0.8;
 }
 
+.achievementsSection {
+  margin-bottom: 24px;
+}
+
+.achievementsHeading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.achievementsTitle {
+  color: var(--text);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.achievementsProgress {
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.achievementsRefreshButton {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+
+.achievementsRefreshButton:hover:not(:disabled),
+.achievementsRefreshButton:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+  transform: rotate(45deg);
+}
+
+.achievementsRefreshButton:disabled {
+  opacity: 0.6;
+}
+
+.achievementsRefreshButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.achievementsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.achievementCard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background: rgba(17, 21, 30, 0.82);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.achievementLocked {
+  opacity: 0.5;
+}
+
+.achievementLocked .achievementBadge {
+  filter: grayscale(1);
+}
+
+.achievementUnlocked {
+  border-color: var(--violet);
+}
+
+.achievementBadge {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  background: var(--surface);
+}
+
+.achievementInfo {
+  min-width: 0;
+}
+
+.achievementTitle {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.achievementDescription {
+  color: var(--text-secondary);
+  display: -webkit-box;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin-top: 2px;
+}
+
+.achievementPoints {
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+}
+
+.achievementsToggle {
+  color: var(--cyan);
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-top: 8px;
+  padding: 2px 0;
+}
+
+.achievementsToggle:hover,
+.achievementsToggle:focus-visible {
+  text-decoration: underline;
+}
+
+.achievementsCredit {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  margin-top: 8px;
+}
+
 .variantRow {
   display: flex;
   align-items: center;
@@ -512,10 +716,31 @@
   box-shadow: var(--shadow-focus);
 }
 
+/* Play (plus everything needed to configure it) sticks to the top of
+   `.info`'s own scroll area once the user scrolls past it — see the
+   comment at its call site in GameDetail.tsx for why. No negative margins
+   here: `.info` clips to its own rounded corners once scrolled (overflow-y
+   auto makes overflow-x compute to auto too), so a flush edge-to-edge bar
+   would visibly clash with them once stuck at the top. */
+.actionsBar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  margin-bottom: 22px;
+  padding: 14px 0 18px;
+  background: rgba(9, 11, 16, 0.94);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .actions {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .playButton {
@@ -549,6 +774,27 @@
   cursor: default;
   opacity: 0.85;
   transform: none;
+}
+
+.playButtonPlaying {
+  background: var(--surface);
+  color: var(--cyan);
+  box-shadow: none;
+  animation: playingPulse 1.8s ease-in-out infinite;
+}
+
+.playButtonPlaying:disabled {
+  opacity: 1;
+}
+
+@keyframes playingPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
 }
 
 .secondaryButton {

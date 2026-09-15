@@ -5,39 +5,10 @@
   padding: 20px 40px 40px;
 }
 
-.headerRow {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-bottom: 24px;
-  flex-shrink: 0;
-}
-
-.backButton {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  padding: 9px 16px;
-  font-size: 0.9rem;
-  transition:
-    color 140ms var(--ease),
-    border-color 140ms var(--ease);
-}
-
-.backButton:hover,
-.backButton:focus-visible {
-  color: var(--text);
-  border-color: var(--violet);
-}
-
-.backButton:focus-visible {
-  box-shadow: var(--shadow-focus);
-}
-
 .title {
   font-size: 1.5rem;
-  margin: 0;
+  margin: 0 0 24px;
+  flex-shrink: 0;
 }
 
 .status {

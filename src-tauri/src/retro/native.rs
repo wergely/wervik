@@ -166,9 +166,74 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     }
 }
 
+/// A plain "one RetroArch core, no BIOS" entry — every platform below that
+/// EmulatorJS already fully covers (see `Platform::default_core`) gets one
+/// of these as an *additional* choice, never `recommended` over it: these
+/// exist for anyone who wants native performance instead of the WASM path,
+/// not because EmulatorJS is missing anything for these systems the way it
+/// is for Arcade/Neo Geo CD. Each one intentionally downloads the exact
+/// same libretro core EmulatorJS already vendors for that platform (see
+/// `managed_release_for`) — a native build of a core already trusted here,
+/// not an unrelated one that could behave differently.
+#[cfg(target_os = "windows")]
+fn plain_retroarch_core(id: &'static str, display_name: &'static str) -> NativeEmulator {
+    NativeEmulator {
+        id,
+        display_name,
+        launcher: Launcher::Managed,
+        recommended: false,
+        launch_args: &["-L", "{core}", "{rom}"],
+        settings_args: &["--menu"],
+        bios_relpath: None,
+        required_system_libs: &[],
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     match platform {
+        Platform::Nes => vec![plain_retroarch_core("retroarch-nes", "RetroArch · FCEUmm")],
+        Platform::Snes => vec![plain_retroarch_core("retroarch-snes", "RetroArch · Snes9x")],
+        Platform::GameBoy => vec![plain_retroarch_core("retroarch-gameboy", "RetroArch · Gambatte")],
+        Platform::GameBoyColor => {
+            vec![plain_retroarch_core("retroarch-gameboy-color", "RetroArch · Gambatte")]
+        }
+        Platform::GameBoyAdvance => vec![plain_retroarch_core("retroarch-gba", "RetroArch · mGBA")],
+        Platform::MasterSystem => {
+            vec![plain_retroarch_core("retroarch-mastersystem", "RetroArch · Genesis Plus GX")]
+        }
+        Platform::Genesis => vec![plain_retroarch_core("retroarch-genesis", "RetroArch · Genesis Plus GX")],
+        Platform::GameGear => vec![plain_retroarch_core("retroarch-gamegear", "RetroArch · Genesis Plus GX")],
+        Platform::Sega32X => vec![plain_retroarch_core("retroarch-32x", "RetroArch · PicoDrive")],
+        Platform::PlayStation => vec![NativeEmulator {
+            id: "retroarch-playstation",
+            display_name: "RetroArch · Mednafen PSX",
+            launcher: Launcher::Managed,
+            recommended: false,
+            launch_args: &["-L", "{core}", "{rom}"],
+            settings_args: &["--menu"],
+            // Same BIOS directory convention as the other RetroArch cores
+            // above that need one — mednafen_psx_hw looks directly in
+            // RetroArch's `system/` for the PS1 BIOS files by name.
+            bios_relpath: Some("system/"),
+            required_system_libs: &[],
+        }],
+        Platform::Atari5200 => vec![plain_retroarch_core("retroarch-atari5200", "RetroArch · a5200")],
+        Platform::Atari7800 => vec![plain_retroarch_core("retroarch-atari7800", "RetroArch · ProSystem")],
+        Platform::AtariLynx => vec![plain_retroarch_core("retroarch-atarilynx", "RetroArch · Handy")],
+        Platform::AtariJaguar => {
+            vec![plain_retroarch_core("retroarch-atarijaguar", "RetroArch · Virtual Jaguar")]
+        }
+        Platform::WonderSwan => {
+            vec![plain_retroarch_core("retroarch-wonderswan", "RetroArch · Mednafen WonderSwan")]
+        }
+        Platform::NeoGeoPocket => {
+            vec![plain_retroarch_core("retroarch-neogeopocket", "RetroArch · Mednafen NeoPop")]
+        }
+        Platform::PcEngine => vec![plain_retroarch_core("retroarch-pcengine", "RetroArch · Mednafen PCE")],
+        Platform::ColecoVision => {
+            vec![plain_retroarch_core("retroarch-colecovision", "RetroArch · Gearcoleco")]
+        }
         Platform::Nintendo64 => vec![NativeEmulator {
             id: "retroarch-mupen64plus-next",
             display_name: "RetroArch · Mupen64Plus-Next",
@@ -221,7 +286,6 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
                 required_system_libs: &[],
             },
         ],
-        _ => Vec::new(),
     }
 }
 
@@ -316,7 +380,37 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
                 core_name: "mupen64plus_next",
             },
         }),
+        // Every plain `plain_retroarch_core` entry from `native_emulators_for`
+        // above — same core name as `Platform::default_core` for that
+        // system, verified against the real Libretro buildbot listing
+        // rather than assumed.
+        "retroarch-nes" => Some(retroarch_core("fceumm")),
+        "retroarch-snes" => Some(retroarch_core("snes9x")),
+        "retroarch-gameboy" | "retroarch-gameboy-color" => Some(retroarch_core("gambatte")),
+        "retroarch-gba" => Some(retroarch_core("mgba")),
+        "retroarch-mastersystem" | "retroarch-genesis" | "retroarch-gamegear" => {
+            Some(retroarch_core("genesis_plus_gx"))
+        }
+        "retroarch-32x" => Some(retroarch_core("picodrive")),
+        "retroarch-playstation" => Some(retroarch_core("mednafen_psx_hw")),
+        "retroarch-atari5200" => Some(retroarch_core("a5200")),
+        "retroarch-atari7800" => Some(retroarch_core("prosystem")),
+        "retroarch-atarilynx" => Some(retroarch_core("handy")),
+        "retroarch-atarijaguar" => Some(retroarch_core("virtualjaguar")),
+        "retroarch-wonderswan" => Some(retroarch_core("mednafen_wswan")),
+        "retroarch-neogeopocket" => Some(retroarch_core("mednafen_ngp")),
+        "retroarch-pcengine" => Some(retroarch_core("mednafen_pce")),
+        "retroarch-colecovision" => Some(retroarch_core("gearcoleco")),
         _ => None,
+    }
+}
+
+/// The standard shape of a managed RetroArch core release: the same
+/// official portable RetroArch package, with only the core name varying.
+fn retroarch_core(core_name: &'static str) -> ManagedRelease {
+    ManagedRelease {
+        source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+        kind: ManagedKind::RetroArch { core_name },
     }
 }
 
@@ -393,6 +487,15 @@ fn set_retroarch_option(path: &Path, key: &str, value: &str) -> Result<(), Strin
         output.push_str(value);
         output.push_str("\"\n");
     }
+    // A per-core options file (e.g. `config/NeoCD/NeoCD.opt`) lives in a
+    // directory RetroArch only creates itself the first time that core
+    // actually saves its own options at runtime — on a freshly extracted
+    // RetroArch, `config/<CoreName>/` doesn't exist yet, so writing here
+    // ahead of that failed with "path not found" (Windows os error 3) on a
+    // brand-new install.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
     std::fs::write(path, output).map_err(|error| error.to_string())
 }
 
@@ -447,6 +550,150 @@ fn ensure_retroarch_defaults(app_data_dir: &Path) -> Result<(), String> {
 
     std::fs::write(marker, b"Wervik managed RetroArch defaults\n")
         .map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn retroarch_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
+    let executable = retroarch_executable_path(app_data_dir);
+    if !executable.is_file() {
+        return Err(
+            "Install a RetroArch-based emulator first (e.g. for Arcade or Neo Geo, in Platforms) — \
+             RetroAchievements only applies to games launched through it."
+                .to_string(),
+        );
+    }
+    let runtime_dir = executable
+        .parent()
+        .ok_or_else(|| "Could not determine RetroArch's installation directory.".to_string())?;
+    Ok(runtime_dir.join("retroarch.cfg"))
+}
+
+/// Points the managed RetroArch install's own RetroAchievements engine
+/// (real-time unlock popups, hardcore mode) at `username`. RetroArch
+/// exchanges `password` for a session token and overwrites its own config
+/// with that token on next successful login — Wervik never stores this
+/// password itself, only relays it into RetroArch's config this once.
+#[cfg(target_os = "windows")]
+pub fn enable_retroarch_achievements(
+    app_data_dir: &Path,
+    username: &str,
+    password: &str,
+    hardcore: bool,
+) -> Result<(), String> {
+    let config_path = retroarch_config_path(app_data_dir)?;
+    set_retroarch_option(&config_path, "cheevos_enable", "true")?;
+    set_retroarch_option(&config_path, "cheevos_username", username)?;
+    set_retroarch_option(&config_path, "cheevos_password", password)?;
+    set_retroarch_option(
+        &config_path,
+        "cheevos_hardcore_mode_enable",
+        if hardcore { "true" } else { "false" },
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub fn disable_retroarch_achievements(app_data_dir: &Path) -> Result<(), String> {
+    let config_path = retroarch_config_path(app_data_dir)?;
+    set_retroarch_option(&config_path, "cheevos_enable", "false")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn enable_retroarch_achievements(
+    _app_data_dir: &Path,
+    _username: &str,
+    _password: &str,
+    _hardcore: bool,
+) -> Result<(), String> {
+    Err("RetroArch achievements setup is only available on Windows.".to_string())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn disable_retroarch_achievements(_app_data_dir: &Path) -> Result<(), String> {
+    Err("RetroArch achievements setup is only available on Windows.".to_string())
+}
+
+/// Whether `platform`'s native RetroArch core can meaningfully render
+/// above the original hardware's own resolution — the only two platforms
+/// where "Optimized" (see `apply_graphics_preset`) is a real, well-known
+/// enhancement rather than just a subjective shader/filter choice. Every
+/// 2D system Wervik supports already renders at its one native resolution,
+/// so there's nothing to offer there.
+pub fn supports_graphics_preset(platform: Platform) -> bool {
+    matches!(platform, Platform::Nintendo64 | Platform::PlayStation)
+}
+
+/// Sets the internal render resolution for the platforms above, via each
+/// core's own option file — same mechanism as `set_retroarch_option`, just
+/// under a per-core `config/<core name>/<core name>.opt` rather than the
+/// shared `retroarch.cfg`, which is where RetroArch itself keeps per-core
+/// options. `"Optimized"` always writes an explicit value rather than just
+/// leaving the option unset, so switching back to `"Original"` is a real,
+/// reversible write instead of relying on whatever the core's own default
+/// happens to be.
+///
+/// Core option keys and corename-derived paths verified against each
+/// core's real `libretro_core_options.h` / `.info` file rather than
+/// assumed — `mupen64plus-next-43screensize`/`-169screensize` from
+/// `libretro/mupen64plus-libretro-nx`, `beetle_psx_hw_internal_resolution`
+/// from `libretro/beetle-psx-libretro` (the Mednafen PSX HW core keeps its
+/// original "Beetle" option prefix and corename for compatibility with
+/// existing configs, even though the shipped binary is
+/// `mednafen_psx_hw_libretro.dll`).
+#[cfg(target_os = "windows")]
+pub fn apply_graphics_preset(app_data_dir: &Path, platform: Platform, optimized: bool) -> Result<(), String> {
+    let (core_name, options): (&str, &[(&str, &str)]) = match platform {
+        Platform::Nintendo64 => (
+            "Mupen64Plus-Next",
+            if optimized {
+                &[
+                    ("mupen64plus-next-43screensize", "1920x1440"),
+                    ("mupen64plus-next-169screensize", "1920x1080"),
+                ]
+            } else {
+                &[
+                    ("mupen64plus-next-43screensize", "640x480"),
+                    ("mupen64plus-next-169screensize", "640x360"),
+                ]
+            },
+        ),
+        Platform::PlayStation => (
+            "Beetle PSX HW",
+            if optimized {
+                &[("beetle_psx_hw_internal_resolution", "4x")]
+            } else {
+                &[("beetle_psx_hw_internal_resolution", "1x(native)")]
+            },
+        ),
+        _ => {
+            return Err(format!(
+                "{} has no graphics preset to apply.",
+                platform.display_name()
+            ))
+        }
+    };
+
+    let executable = retroarch_executable_path(app_data_dir);
+    if !executable.is_file() {
+        return Err(
+            "Install this platform's RetroArch core first, in Platform Setup.".to_string(),
+        );
+    }
+    let runtime_dir = executable
+        .parent()
+        .ok_or_else(|| "Could not determine RetroArch's installation directory.".to_string())?;
+    let options_path = runtime_dir
+        .join("config")
+        .join(core_name)
+        .join(format!("{core_name}.opt"));
+    for (key, value) in options {
+        set_retroarch_option(&options_path, key, value)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn apply_graphics_preset(_app_data_dir: &Path, _platform: Platform, _optimized: bool) -> Result<(), String> {
+    Err("Graphics presets are only available on Windows.".to_string())
 }
 
 fn find_retroarch_executable(dir: &Path, remaining_depth: u8) -> Option<PathBuf> {
@@ -1708,5 +1955,38 @@ mod windows_tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+// Only meaningful on Windows itself: the Linux test module above exercises
+// the `not(target_os = "windows")` variant of `native_emulators_for`, which
+// is a different function entirely (see the `#[cfg]` on each).
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn every_managed_native_has_a_release_source() {
+        for platform in Platform::ALL {
+            for emulator in native_emulators_for(platform) {
+                if emulator.is_managed() {
+                    assert!(
+                        managed_release_for(emulator.id).is_some(),
+                        "{} ({platform:?}) has no managed_release_for entry",
+                        emulator.id,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_platform_has_at_least_one_native_option() {
+        for platform in Platform::ALL {
+            assert!(
+                !native_emulators_for(platform).is_empty(),
+                "{platform:?} has no native emulator option at all"
+            );
+        }
     }
 }

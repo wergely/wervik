@@ -27,7 +27,7 @@ export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect,
           className={styles.card}
           data-nav-item
           onClick={() => onSelect(displayedSuggestion)}
-          aria-label={displayedSuggestion.name}
+          aria-label={`${displayedSuggestion.name}${displayedSuggestion.isInstalled ? "" : " — Not installed"}`}
         >
           <div className={styles.art}>
             {url && !failed ? (
@@ -40,8 +40,10 @@ export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect,
             <SourceBadge
               label={sourceLabel(displayedSuggestion)}
               source={displayedSuggestion.source}
+              platformKey={displayedSuggestion.platformKey}
               className={styles.sourceBadge}
             />
+            {!displayedSuggestion.isInstalled && <div className={styles.notInstalledBadge}>Not installed</div>}
             {releaseYear(displayedSuggestion) && <div className={styles.releaseYear}>{releaseYear(displayedSuggestion)}</div>}
             {displayedSuggestion.igdbScore != null && (
               <div className={styles.scoreBadge} aria-label={`IGDB score ${Math.round(displayedSuggestion.igdbScore)}`}>

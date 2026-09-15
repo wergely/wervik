@@ -4,10 +4,12 @@ import {
   installNativeEmulator,
   openNativeEmulatorSettings,
   setDefaultEmulator,
+  setGraphicsPreset,
 } from "../api/tauri";
 import type { EmulatorOption, PlatformStatus } from "../types";
 import { BiosControl } from "./BiosControl";
 import { Spinner } from "./Spinner";
+import { Switch } from "./Switch";
 import styles from "./PlatformDetail.module.css";
 
 interface PlatformDetailProps {
@@ -33,6 +35,7 @@ function availabilityLabel(option: EmulatorOption): string {
 export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
   const [platform, setPlatform] = useState<PlatformStatus | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [applyingPreset, setApplyingPreset] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const backButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -62,6 +65,22 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
       setActionError(typeof err === "string" ? err : "Couldn't download this emulator.");
     } finally {
       setInstalling(null);
+    }
+  }
+
+  async function handleSetGraphicsPreset(optimized: boolean) {
+    if (applyingPreset) return;
+    setActionError(null);
+    setApplyingPreset(true);
+    const previous = platform?.graphicsPreset ?? null;
+    setPlatform((prev) => (prev ? { ...prev, graphicsPreset: optimized ? "optimized" : "original" } : prev));
+    try {
+      await setGraphicsPreset(platformKey, optimized);
+    } catch (err) {
+      setPlatform((prev) => (prev ? { ...prev, graphicsPreset: previous } : prev));
+      setActionError(typeof err === "string" ? err : "Couldn't apply that graphics preset.");
+    } finally {
+      setApplyingPreset(false);
     }
   }
 
@@ -170,6 +189,28 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
             <BiosControl platformKey={platform.key} platformName={platform.displayName} />
           )}
 
+          {platform.graphicsPreset != null && (
+            <div className={styles.graphicsPreset}>
+              <p className={styles.sectionLabel}>Graphics</p>
+              <div className={styles.presetRow}>
+                <div>
+                  <div className={styles.presetLabel}>Optimized resolution</div>
+                  <div className={styles.presetDescription}>
+                    Renders at a higher internal resolution than the original hardware for sharper
+                    edges — same game, same art, just less jagged. Applies once you're using the
+                    native RetroArch emulator above.
+                  </div>
+                </div>
+                <Switch
+                  checked={platform.graphicsPreset === "optimized"}
+                  onChange={handleSetGraphicsPreset}
+                  disabled={applyingPreset}
+                  label="Optimized resolution"
+                />
+              </div>
+            </div>
+          )}
+
           {actionError && <p className={styles.actionError}>{actionError}</p>}
 
           {isFallenBack && (
@@ -216,6 +257,14 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
             <span className={styles.summaryLabel}>Default Emulator</span>
             <span className={styles.summaryValue}>{selected?.displayName ?? "—"}</span>
           </div>
+          {platform.graphicsPreset != null && (
+            <div className={styles.summaryRow}>
+              <span className={styles.summaryLabel}>Graphics</span>
+              <span className={styles.summaryValue}>
+                {platform.graphicsPreset === "optimized" ? "Optimized" : "Original"}
+              </span>
+            </div>
+          )}
         </aside>
       </div>
 

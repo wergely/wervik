@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::AppStateHandle;
 
@@ -346,7 +346,11 @@ fn game_process_is_running(system: &System, target: &ProcessTarget) -> bool {
         .any(|process| process_is_in_target(process, target))
 }
 
-pub fn spawn_process_monitor(app_handle: AppHandle, session_id: i64, target: ProcessTarget) {
+/// `game_id` is only used to tell the frontend which game's "Playing"
+/// status just ended (see the `playtime-updated` emit below and in
+/// `commands::finish_playtime_session`) — the session itself is tracked by
+/// `session_id` alone, same as before.
+pub fn spawn_process_monitor(app_handle: AppHandle, session_id: i64, game_id: String, target: ProcessTarget) {
     std::thread::spawn(move || {
         let mut system = System::new();
         let deadline = Instant::now() + STARTUP_GRACE;
@@ -375,6 +379,11 @@ pub fn spawn_process_monitor(app_handle: AppHandle, session_id: i64, target: Pro
                 }
             } else if Instant::now() >= deadline {
                 cancel_session(&app_handle, session_id);
+                // The process never actually appeared (finish_session, which
+                // emits this same event with the real game id, never runs
+                // for a cancelled session) — the frontend still needs to
+                // know to stop showing this game as "Playing".
+                let _ = app_handle.emit("playtime-updated", &game_id);
                 return;
             }
 
@@ -387,7 +396,7 @@ fn heartbeat_session(app_handle: &AppHandle, session_id: i64) -> bool {
     let Some(state) = app_handle.try_state::<AppStateHandle>() else {
         return false;
     };
-    let state = state.lock().unwrap();
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
     state
         .playtime
         .heartbeat(session_id, crate::commands::now_unix())
@@ -400,7 +409,7 @@ fn finish_session(app_handle: &AppHandle, session_id: i64) {
 
 fn cancel_session(app_handle: &AppHandle, session_id: i64) {
     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
-        let state = state.lock().unwrap();
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let _ = state
             .playtime
             .cancel_session(session_id, crate::commands::now_unix());

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AchievementsOverview,
   ArtworkProgress,
   GameMetadata,
   GameReaction,
@@ -9,16 +10,32 @@ import type {
   MetadataProgress,
   NexusMod,
   PlatformStatus,
+  RaGameAchievements,
+  RaProfileSummary,
   RetroLaunch,
   Settings,
+  SteamGameAchievements,
 } from "../types";
 
 export function getLibrary(): Promise<LibrarySnapshot> {
   return invoke("get_library");
 }
 
-export function getGameMetadata(gameId: string, gameName: string): Promise<GameMetadata | null> {
-  return invoke("get_game_metadata", { gameId, gameName });
+export function getGameMetadata(
+  gameId: string,
+  gameName: string,
+  platformKey?: string | null,
+): Promise<GameMetadata | null> {
+  return invoke("get_game_metadata", { gameId, gameName, platformKey: platformKey ?? null });
+}
+
+/** Bypasses the cache entirely — for a game stuck with a wrong IGDB match. */
+export function refreshGameMetadata(
+  gameId: string,
+  gameName: string,
+  platformKey?: string | null,
+): Promise<GameMetadata | null> {
+  return invoke("refresh_game_metadata", { gameId, gameName, platformKey: platformKey ?? null });
 }
 
 export function getNexusMods(gameName: string): Promise<NexusMod[] | null> {
@@ -27,6 +44,49 @@ export function getNexusMods(gameName: string): Promise<NexusMod[] | null> {
 
 export function openNexusMod(url: string): Promise<void> {
   return invoke("open_nexus_mod", { url });
+}
+
+/** `Ok(None)` (returned as `null`) covers "nothing to show" — not a ROM,
+ * no RetroAchievements credentials configured, or no matching game — none
+ * of which are errors the UI needs to surface. `force` bypasses the
+ * server-side cache (the refresh button, or right after a play session on
+ * this game ends). */
+export function getRetroAchievements(gameId: string, force = false): Promise<RaGameAchievements | null> {
+  return invoke("get_retro_achievements", { gameId, force });
+}
+
+/** Steam counterpart to `getRetroAchievements` — matched by the exact
+ * Steam app id, so `null` only ever means "this game has no achievements
+ * at all". A rejected promise (most commonly a private Steam profile) is
+ * left for the caller to surface, since it's something the user can fix. */
+export function getSteamAchievements(gameId: string, force = false): Promise<SteamGameAchievements | null> {
+  return invoke("get_steam_achievements", { gameId, force });
+}
+
+/** Cross-library achievements overview — reads only what's already cached
+ * from each game's own background sweep, so this never triggers a fresh
+ * per-game network fetch. */
+export function getAchievementsOverview(): Promise<AchievementsOverview> {
+  return invoke("get_achievements_overview");
+}
+
+/** Account-wide RetroAchievements rank/points. `null` when RA credentials
+ * aren't configured in Settings. */
+export function getRaProfileSummary(): Promise<RaProfileSummary | null> {
+  return invoke("get_ra_profile_summary");
+}
+
+/** Enables (or disables) RetroArch's own live RetroAchievements engine for
+ * the platforms launched through Wervik's managed RetroArch (Arcade, CPS,
+ * Neo Geo). `password` is relayed into RetroArch's own config and never
+ * stored by Wervik — pass an empty string when `enabled` is false. */
+export function applyRetroArchAchievements(
+  enabled: boolean,
+  username: string,
+  password: string,
+  hardcore: boolean,
+): Promise<void> {
+  return invoke("apply_retroarch_achievements", { enabled, username, password, hardcore });
 }
 
 export function rescanLibrary(): Promise<LibrarySnapshot> {
@@ -41,6 +101,14 @@ export function getMetadataProgress(): Promise<MetadataProgress> {
   return invoke("get_metadata_progress");
 }
 
+export function refreshAllMetadata(): Promise<void> {
+  return invoke("refresh_all_metadata");
+}
+
+export function getRomScanStatus(): Promise<boolean> {
+  return invoke("get_rom_scan_status");
+}
+
 /** Jumps one game to the front of the box-art queue — a cache hit (or an
  * eventual `retro-artwork-updated` event, if it wasn't already cached)
  * updates the library, so callers don't need to do anything with the
@@ -53,12 +121,20 @@ export function launchGame(appId: number): Promise<void> {
   return invoke("launch_game", { appId });
 }
 
+export function installSteamGame(appId: number): Promise<void> {
+  return invoke("install_steam_game", { appId });
+}
+
 export function launchXboxGame(id: string): Promise<void> {
   return invoke("launch_xbox_game", { id });
 }
 
 export function launchBattleNetGame(id: string): Promise<void> {
   return invoke("launch_battlenet_game", { id });
+}
+
+export function launchEaGame(id: string): Promise<void> {
+  return invoke("launch_ea_game", { id });
 }
 
 export function openSteamPage(appId: number): Promise<void> {
@@ -96,6 +172,10 @@ export function openXboxFolder(id: string): Promise<void> {
 
 export function openBattleNetFolder(id: string): Promise<void> {
   return invoke("open_battlenet_folder", { id });
+}
+
+export function openEaFolder(id: string): Promise<void> {
+  return invoke("open_ea_folder", { id });
 }
 
 export function getGameSetupStatus(appId: number): Promise<GameSetupStatus> {
@@ -156,6 +236,13 @@ export function getPlatformStatus(): Promise<PlatformStatus[]> {
  * emulator's id. Takes effect immediately, no separate apply step. */
 export function setDefaultEmulator(platform: string, emulatorId: string): Promise<void> {
   return invoke("set_default_emulator", { platform, emulatorId });
+}
+
+/** Sets a platform's graphics preset (see `PlatformStatus.graphicsPreset`) —
+ * only valid for a platform that has one at all. Rejects if that
+ * platform's RetroArch core isn't installed yet. */
+export function setGraphicsPreset(platform: string, optimized: boolean): Promise<void> {
+  return invoke("set_graphics_preset", { platform, optimized });
 }
 
 export function getPlatformSetupStatus(platform: string): Promise<GameSetupStatus> {

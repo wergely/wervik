@@ -10,7 +10,7 @@
     "opener:allow-open-path",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "steam://*" }]
+      "allow": [{ "url": "steam://*" }, { "url": "origin2://*" }]
     },
     "autostart:default",
     "dialog:default"

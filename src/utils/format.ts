@@ -3,7 +3,9 @@ import type { Game } from "../types";
 export function sourceLabel(game: Game): string {
   if (game.source === "retro") return game.platform ?? "Retro";
   if (game.source === "xbox") return "Xbox";
-  return game.source === "battlenet" ? "Battle.net" : "Steam";
+  if (game.source === "battlenet") return "Battle.net";
+  if (game.source === "ea") return "EA App";
+  return "Steam";
 }
 
 export function formatPlaytime(minutes: number | null): string | null {

@@ -4,6 +4,14 @@ import { readImage } from "../api/tauri";
 const cache = new Map<string, Promise<string>>();
 
 function load(path: string): Promise<string> {
+  if (/^https?:\/\//i.test(path)) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(path);
+      image.onerror = () => reject(new Error("Artwork request failed"));
+      image.src = path;
+    });
+  }
   let pending = cache.get(path);
   if (!pending) {
     pending = readImage(path);
@@ -13,7 +21,8 @@ function load(path: string): Promise<string> {
   return pending;
 }
 
-/** Loads a locally-cached Steam artwork file as a displayable data URL. */
+/** Loads local artwork through Tauri, while passing public remote artwork
+ * URLs through for Steam titles that are not installed yet. */
 export function useArtwork(path: string | null | undefined): {
   url: string | null;
   failed: boolean;
