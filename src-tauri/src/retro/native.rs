@@ -218,6 +218,28 @@ fn plain_retroarch_core(id: &'static str, display_name: &'static str) -> NativeE
     }
 }
 
+/// GameCube and Wii share the exact same libretro core — Dolphin's own,
+/// covering both systems here just like the standalone emulator does.
+/// Unlike `plain_retroarch_core`'s entries, this is `recommended`: neither
+/// platform has any EmulatorJS fallback at all (see `Platform::default_core`),
+/// so this is the only real option rather than an alternative to one.
+#[cfg(target_os = "windows")]
+fn dolphin_core_emulator(id: &'static str, display_name: &'static str) -> NativeEmulator {
+    NativeEmulator {
+        id,
+        display_name,
+        launcher: Launcher::Managed,
+        recommended: true,
+        launch_args: &["-L", "{core}", "{rom}"],
+        settings_args: &["--menu"],
+        // Dolphin (standalone or libretro) boots the near-totality of
+        // GameCube/Wii games with no IPL/BIOS dump at all, via HLE — see
+        // `Platform::requires_bios`.
+        bios_relpath: None,
+        required_system_libs: &[],
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     match platform {
@@ -337,6 +359,8 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
             required_system_libs: &[],
         }],
         Platform::WiiU => vec![cemu_emulator()],
+        Platform::GameCube => vec![dolphin_core_emulator("retroarch-gamecube", "RetroArch · Dolphin")],
+        Platform::Wii => vec![dolphin_core_emulator("retroarch-wii", "RetroArch · Dolphin")],
     }
 }
 
@@ -482,6 +506,11 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
         "retroarch-neogeopocket" => Some(retroarch_core("mednafen_ngp")),
         "retroarch-pcengine" => Some(retroarch_core("mednafen_pce")),
         "retroarch-colecovision" => Some(retroarch_core("gearcoleco")),
+        // Dolphin's own libretro core — verified present on the real
+        // buildbot listing for both Windows and Linux, and (uniquely among
+        // the cores here) covers two platforms at once, the same as the
+        // real standalone Dolphin does.
+        "retroarch-gamecube" | "retroarch-wii" => Some(retroarch_core("dolphin")),
         // PCSX2's official Windows release is a portable `.7z` with
         // `pcsx2-qt.exe` sitting at the archive root (verified against the
         // real v2.8.2 asset) — `asset_name`'s `*` stands in for the version
@@ -1470,6 +1499,11 @@ mod tests {
         assert_eq!(native_emulators_for(Platform::WiiU).len(), 1);
         assert_eq!(native_emulators_for(Platform::WiiU)[0].id, "cemu");
         assert!(native_emulators_for(Platform::Snes).is_empty());
+        // GameCube/Wii's only native option (the Dolphin libretro core) is
+        // Windows-only, same as every other per-core RetroArch option —
+        // Linux has no managed RetroArch-per-core mechanism at all yet.
+        assert!(native_emulators_for(Platform::GameCube).is_empty());
+        assert!(native_emulators_for(Platform::Wii).is_empty());
     }
 
     #[test]
@@ -2059,6 +2093,31 @@ mod windows_tests {
         assert_eq!(neo_geo_cd[1].id, "retroarch-geolith");
         assert_eq!(neo_geo_cd[2].id, "retroarch-fbneo");
         assert!(neo_geo_cd[0].recommended);
+    }
+
+    /// GameCube and Wii share the exact same libretro core (Dolphin's own),
+    /// and — unlike Arcade/N64/Neo Geo CD's RetroArch options above — it's
+    /// each platform's *only* native option, not an alternative to an
+    /// EmulatorJS one that doesn't exist for either system.
+    #[test]
+    fn gamecube_and_wii_share_the_dolphin_core() {
+        let gamecube = native_emulators_for(Platform::GameCube);
+        assert_eq!(gamecube.len(), 1);
+        assert_eq!(gamecube[0].id, "retroarch-gamecube");
+        assert!(gamecube[0].recommended);
+        assert!(matches!(
+            managed_release_for("retroarch-gamecube").unwrap().kind,
+            ManagedKind::RetroArch { core_name: "dolphin" }
+        ));
+
+        let wii = native_emulators_for(Platform::Wii);
+        assert_eq!(wii.len(), 1);
+        assert_eq!(wii[0].id, "retroarch-wii");
+        assert!(wii[0].recommended);
+        assert!(matches!(
+            managed_release_for("retroarch-wii").unwrap().kind,
+            ManagedKind::RetroArch { core_name: "dolphin" }
+        ));
     }
 
     #[test]

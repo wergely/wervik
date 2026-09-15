@@ -56,6 +56,34 @@ fn looks_like_playstation2_disc(data: &[u8]) -> bool {
     contains(data, b"CD001") && contains(data, b"BOOT2")
 }
 
+/// GameCube's own disc magic word — a fixed 4-byte value every real GameCube
+/// disc carries at a fixed header offset (0x1C), zero on every other disc.
+/// This is the same field Dolphin itself reads to identify a GameCube disc
+/// (as opposed to `looks_like_playstation_disc`'s pair of markers, this is a
+/// single exact value at a known position, so no separate "is this at least
+/// some known-good ISO9660" pre-check is needed).
+const GAMECUBE_DISC_MAGIC_OFFSET: usize = 0x1c;
+const GAMECUBE_DISC_MAGIC: [u8; 4] = [0xc2, 0x33, 0x9f, 0x3d];
+
+/// Wii's counterpart to `GAMECUBE_DISC_MAGIC` — same idea, a different fixed
+/// value at a different offset (0x18) in the same header. A disc only ever
+/// carries one of the two (the other field reads zero), so checking either
+/// one alone is enough to tell GameCube and Wii apart.
+const WII_DISC_MAGIC_OFFSET: usize = 0x18;
+const WII_DISC_MAGIC: [u8; 4] = [0x5d, 0x1c, 0x9e, 0xa3];
+
+fn magic_at(data: &[u8], offset: usize, magic: &[u8; 4]) -> bool {
+    data.get(offset..offset + magic.len()) == Some(magic.as_slice())
+}
+
+fn looks_like_gamecube_disc(data: &[u8]) -> bool {
+    magic_at(data, GAMECUBE_DISC_MAGIC_OFFSET, &GAMECUBE_DISC_MAGIC)
+}
+
+fn looks_like_wii_disc(data: &[u8]) -> bool {
+    magic_at(data, WII_DISC_MAGIC_OFFSET, &WII_DISC_MAGIC)
+}
+
 /// The filename a `.cue` sheet's first `FILE "..."` line references — the
 /// disc's actual data track, which is what needs checking, not the cue
 /// sheet's own (tiny, plain-text) content.
@@ -159,6 +187,14 @@ pub(crate) fn iso_is_a_playstation_disc(iso_path: &Path) -> bool {
     iso_matches(iso_path, looks_like_playstation_disc)
 }
 
+pub(crate) fn iso_is_a_gamecube_disc(iso_path: &Path) -> bool {
+    iso_matches(iso_path, looks_like_gamecube_disc)
+}
+
+pub(crate) fn iso_is_a_wii_disc(iso_path: &Path) -> bool {
+    iso_matches(iso_path, looks_like_wii_disc)
+}
+
 /// Same idea as `cue_matches`, but for a `.cue` entry *inside a zip* —
 /// reads the referenced track straight from the archive instead of the
 /// filesystem, and only decompresses as much of it as the probe size
@@ -237,6 +273,20 @@ pub(crate) fn zip_iso_is_a_playstation_disc<R: Read + std::io::Seek>(
     iso_entry_name: &str,
 ) -> bool {
     zip_iso_matches(archive, iso_entry_name, looks_like_playstation_disc)
+}
+
+pub(crate) fn zip_iso_is_a_gamecube_disc<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    iso_entry_name: &str,
+) -> bool {
+    zip_iso_matches(archive, iso_entry_name, looks_like_gamecube_disc)
+}
+
+pub(crate) fn zip_iso_is_a_wii_disc<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    iso_entry_name: &str,
+) -> bool {
+    zip_iso_matches(archive, iso_entry_name, looks_like_wii_disc)
 }
 
 #[cfg(test)]
@@ -324,6 +374,58 @@ mod tests {
 
         assert!(iso_is_a_playstation2_disc(&iso_path));
         assert!(!iso_is_a_playstation_disc(&iso_path));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GameCube and Wii dumps carry no ISO9660 markers at all (`.gcm`/raw
+    /// discs use their own proprietary filesystem) — just the one exact
+    /// magic word each, at each one's own fixed offset, with the other
+    /// platform's offset reading zero.
+    #[test]
+    fn gamecube_and_wii_magic_words_are_at_distinct_offsets() {
+        let mut fake_gamecube_disc = vec![0u8; 40_000];
+        fake_gamecube_disc[0x1c..0x1c + 4].copy_from_slice(&GAMECUBE_DISC_MAGIC);
+        assert!(looks_like_gamecube_disc(&fake_gamecube_disc));
+        assert!(!looks_like_wii_disc(&fake_gamecube_disc));
+
+        let mut fake_wii_disc = vec![0u8; 40_000];
+        fake_wii_disc[0x18..0x18 + 4].copy_from_slice(&WII_DISC_MAGIC);
+        assert!(looks_like_wii_disc(&fake_wii_disc));
+        assert!(!looks_like_gamecube_disc(&fake_wii_disc));
+    }
+
+    #[test]
+    fn iso_is_a_gamecube_disc_checks_the_files_own_content() {
+        let dir = std::env::temp_dir().join(format!("wervik-disc-iso-gcn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut image = vec![0u8; 40_000];
+        image[0x1c..0x1c + 4].copy_from_slice(&GAMECUBE_DISC_MAGIC);
+        let iso_path = dir.join("Game.iso");
+        std::fs::write(&iso_path, &image).unwrap();
+
+        assert!(iso_is_a_gamecube_disc(&iso_path));
+        assert!(!iso_is_a_wii_disc(&iso_path));
+        assert!(!iso_is_a_playstation2_disc(&iso_path));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn iso_is_a_wii_disc_checks_the_files_own_content() {
+        let dir = std::env::temp_dir().join(format!("wervik-disc-iso-wii-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut image = vec![0u8; 40_000];
+        image[0x18..0x18 + 4].copy_from_slice(&WII_DISC_MAGIC);
+        let iso_path = dir.join("Game.iso");
+        std::fs::write(&iso_path, &image).unwrap();
+
+        assert!(iso_is_a_wii_disc(&iso_path));
+        assert!(!iso_is_a_gamecube_disc(&iso_path));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

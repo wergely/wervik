@@ -42,6 +42,8 @@ fn repo_for(platform: Platform) -> Option<&'static str> {
         Platform::ColecoVision => "Coleco_-_ColecoVision",
         Platform::PlayStation2 => "Sony_-_PlayStation_2",
         Platform::WiiU => "Nintendo_-_Wii_U",
+        Platform::GameCube => "Nintendo_-_GameCube",
+        Platform::Wii => "Nintendo_-_Wii",
         Platform::Arcade | Platform::NeoGeoCd => return None,
     })
 }

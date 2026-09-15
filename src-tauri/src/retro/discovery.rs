@@ -115,7 +115,10 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
     let platform = Platform::from_unambiguous_extension(&ext)
         .or_else(|| (ext == "bin").then_some(Platform::Genesis))?;
 
-    if matches!(platform, Platform::PlayStation | Platform::PlayStation2) {
+    // Gated on the extension itself, not the guessed platform — see the
+    // matching comment in `walk` for why (`.gcm`/`.wbfs` are already
+    // unambiguous and must not be re-resolved here).
+    if matches!(ext.as_str(), "cue" | "chd" | "iso") {
         return match ext.as_str() {
             "cue" if super::disc::zip_cue_references_a_playstation_disc(&mut archive, &name) => {
                 Some(Platform::PlayStation)
@@ -127,6 +130,10 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
             // within the stream; a zip entry reader doesn't support that)
             // — and zipping an already-compressed CHD is unusual enough in
             // practice that skipping it rather than guessing costs nothing real.
+            "iso" if super::disc::zip_iso_is_a_gamecube_disc(&mut archive, &name) => {
+                Some(Platform::GameCube)
+            }
+            "iso" if super::disc::zip_iso_is_a_wii_disc(&mut archive, &name) => Some(Platform::Wii),
             "iso" if super::disc::zip_iso_is_a_playstation2_disc(&mut archive, &name) => {
                 Some(Platform::PlayStation2)
             }
@@ -540,9 +547,14 @@ fn walk(
             // against the disc's own data before accepting either one —
             // real Sega CD `.chd` dumps and Neo Geo CD zips were found
             // silently misclassified as PlayStation without this check.
-            // `.iso` is similarly ambiguous, but only between PS1 and PS2
-            // (see `disc::iso_is_a_playstation2_disc`'s doc comment).
-            let platform = if matches!(platform, Platform::PlayStation | Platform::PlayStation2) {
+            // `.iso` is similarly ambiguous, but among PS1, PS2, GameCube,
+            // and Wii (see `disc::iso_is_a_playstation2_disc`'s doc comment
+            // and its GameCube/Wii counterparts). Gated on the extension
+            // itself, not the guessed platform — unlike `.iso`, `.gcm`/
+            // `.wbfs` are already unambiguous and must not be re-resolved
+            // (neither is a disc format any of the checks below recognize,
+            // so re-checking them would just discard every match).
+            let platform = if matches!(ext.as_str(), "cue" | "chd" | "iso") {
                 let resolved = match ext.as_str() {
                     "cue" if super::disc::cue_references_a_playstation_disc(&path) => {
                         Some(Platform::PlayStation)
@@ -556,6 +568,10 @@ fn walk(
                     "chd" if super::disc::chd_is_a_neo_geo_cd_disc(&path) => {
                         Some(Platform::NeoGeoCd)
                     }
+                    "iso" if super::disc::iso_is_a_gamecube_disc(&path) => {
+                        Some(Platform::GameCube)
+                    }
+                    "iso" if super::disc::iso_is_a_wii_disc(&path) => Some(Platform::Wii),
                     "iso" if super::disc::iso_is_a_playstation2_disc(&path) => {
                         Some(Platform::PlayStation2)
                     }
@@ -759,6 +775,73 @@ mod tests {
 
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].platform, Platform::PlayStation);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fake_gamecube_iso_bytes() -> Vec<u8> {
+        let mut image = vec![0u8; 40_000];
+        image[0x1c..0x1c + 4].copy_from_slice(&[0xc2, 0x33, 0x9f, 0x3d]);
+        image
+    }
+
+    fn fake_wii_iso_bytes() -> Vec<u8> {
+        let mut image = vec![0u8; 40_000];
+        image[0x18..0x18 + 4].copy_from_slice(&[0x5d, 0x1c, 0x9e, 0xa3]);
+        image
+    }
+
+    #[test]
+    fn a_loose_iso_with_the_gamecube_magic_word_is_gamecube() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-gcn-iso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        touch(&dir, "Some GameCube Game.iso", &fake_gamecube_iso_bytes());
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::GameCube);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loose_iso_with_the_wii_magic_word_is_wii() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-wii-iso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        touch(&dir, "Some Wii Game.iso", &fake_wii_iso_bytes());
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::Wii);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `.gcm`/`.wbfs` are already unambiguous — must not be routed through
+    /// the `.iso` disc-sniffing path (which would find no matching signature
+    /// for either and silently drop them, since neither is an ISO9660-based
+    /// or magic-word check this module runs against a `.gcm`/`.wbfs`).
+    #[test]
+    fn loose_gcm_and_wbfs_files_are_identified_by_extension_alone() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-gcn-wbfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        touch(&dir, "Some GameCube Game.gcm", b"not a real gcm dump");
+        touch(&dir, "Some Wii Game.wbfs", b"not a real wbfs dump");
+
+        let mut games = scan_directories(&[dir.to_string_lossy().to_string()]);
+        games.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0].platform, Platform::GameCube);
+        assert_eq!(games[1].platform, Platform::Wii);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -993,6 +1076,25 @@ mod tests {
 
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].platform, Platform::PlayStation2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn identifies_a_zipped_gamecube_iso_by_peeking_inside_the_zip() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-zip-gcn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_zip(
+            &dir.join("Some GameCube Game.zip"),
+            &[("Some GameCube Game.iso", &fake_gamecube_iso_bytes())],
+        );
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::GameCube);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
