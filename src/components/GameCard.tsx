@@ -34,7 +34,7 @@ export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
             <span>{game.name}</span>
           </div>
         )}
-        <SourceBadge label={sourceLabel(game)} className={styles.sourceBadge} />
+        <SourceBadge label={sourceLabel(game)} source={game.source} className={styles.sourceBadge} />
         {releaseYear(game) && <div className={styles.releaseYear}>{releaseYear(game)}</div>}
         {game.igdbScore != null && (
           <div className={styles.scoreBadge} aria-label={`IGDB score ${Math.round(game.igdbScore)}`}>

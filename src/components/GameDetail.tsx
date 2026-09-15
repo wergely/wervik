@@ -289,7 +289,7 @@ export function GameDetail({
         </div>
 
         <div className={styles.info}>
-          <SourceBadge label={sourceLabel(game)} className={styles.sourceBadge} />
+          <SourceBadge label={sourceLabel(game)} source={game.source} className={styles.sourceBadge} />
           <h1 className={styles.title}>{game.name}</h1>
 
           <div className={styles.metaRow}>

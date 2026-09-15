@@ -1,16 +1,57 @@
 .badge {
+  --badge-accent: var(--violet);
+  --badge-tint: rgba(124, 92, 255, 0.18);
+  --badge-border: rgba(196, 179, 255, 0.72);
   display: inline-flex;
   align-items: center;
-  padding: 3px 8px;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 9px 4px 8px;
   border-radius: 999px;
-  background: rgba(9, 11, 16, 0.6);
-  backdrop-filter: blur(4px);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
+  background: linear-gradient(135deg, var(--badge-tint), rgba(9, 11, 16, 0.94) 72%);
+  backdrop-filter: blur(10px) saturate(1.25);
+  border: 1px solid var(--badge-border);
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: var(--text);
   font-size: 0.62rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   line-height: 1;
   white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--badge-accent);
+  box-shadow: 0 0 8px var(--badge-accent);
+}
+
+.steam {
+  --badge-accent: #66c0f4;
+  --badge-tint: rgba(102, 192, 244, 0.2);
+  --badge-border: rgba(102, 192, 244, 0.72);
+}
+
+.xbox {
+  --badge-accent: #8be35f;
+  --badge-tint: rgba(139, 227, 95, 0.18);
+  --badge-border: rgba(139, 227, 95, 0.7);
+}
+
+.battlenet {
+  --badge-accent: #62a9ff;
+  --badge-tint: rgba(98, 169, 255, 0.2);
+  --badge-border: rgba(98, 169, 255, 0.74);
+}
+
+.retro {
+  --badge-accent: #c4a0ff;
+  --badge-tint: rgba(196, 160, 255, 0.2);
+  --badge-border: rgba(196, 160, 255, 0.72);
 }

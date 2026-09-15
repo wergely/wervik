@@ -86,7 +86,11 @@ export function SuggestedGameCard({ games, excludeIds, onSelect, onSetReaction }
                 <span>{displayedSuggestion.name}</span>
               </div>
             )}
-            <SourceBadge label={sourceLabel(displayedSuggestion)} className={styles.sourceBadge} />
+            <SourceBadge
+              label={sourceLabel(displayedSuggestion)}
+              source={displayedSuggestion.source}
+              className={styles.sourceBadge}
+            />
             {releaseYear(displayedSuggestion) && <div className={styles.releaseYear}>{releaseYear(displayedSuggestion)}</div>}
             {displayedSuggestion.igdbScore != null && (
               <div className={styles.scoreBadge} aria-label={`IGDB score ${Math.round(displayedSuggestion.igdbScore)}`}>
