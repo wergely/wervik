@@ -115,7 +115,7 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
     let platform = Platform::from_unambiguous_extension(&ext)
         .or_else(|| (ext == "bin").then_some(Platform::Genesis))?;
 
-    if platform == Platform::PlayStation {
+    if matches!(platform, Platform::PlayStation | Platform::PlayStation2) {
         return match ext.as_str() {
             "cue" if super::disc::zip_cue_references_a_playstation_disc(&mut archive, &name) => {
                 Some(Platform::PlayStation)
@@ -127,6 +127,12 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
             // within the stream; a zip entry reader doesn't support that)
             // — and zipping an already-compressed CHD is unusual enough in
             // practice that skipping it rather than guessing costs nothing real.
+            "iso" if super::disc::zip_iso_is_a_playstation2_disc(&mut archive, &name) => {
+                Some(Platform::PlayStation2)
+            }
+            "iso" if super::disc::zip_iso_is_a_playstation_disc(&mut archive, &name) => {
+                Some(Platform::PlayStation)
+            }
             _ => None,
         };
     }
@@ -434,7 +440,9 @@ fn walk(
             // against the disc's own data before accepting either one —
             // real Sega CD `.chd` dumps and Neo Geo CD zips were found
             // silently misclassified as PlayStation without this check.
-            let platform = if platform == Platform::PlayStation {
+            // `.iso` is similarly ambiguous, but only between PS1 and PS2
+            // (see `disc::iso_is_a_playstation2_disc`'s doc comment).
+            let platform = if matches!(platform, Platform::PlayStation | Platform::PlayStation2) {
                 let resolved = match ext.as_str() {
                     "cue" if super::disc::cue_references_a_playstation_disc(&path) => {
                         Some(Platform::PlayStation)
@@ -447,6 +455,12 @@ fn walk(
                     }
                     "chd" if super::disc::chd_is_a_neo_geo_cd_disc(&path) => {
                         Some(Platform::NeoGeoCd)
+                    }
+                    "iso" if super::disc::iso_is_a_playstation2_disc(&path) => {
+                        Some(Platform::PlayStation2)
+                    }
+                    "iso" if super::disc::iso_is_a_playstation_disc(&path) => {
+                        Some(Platform::PlayStation)
                     }
                     _ => None,
                 };
@@ -602,6 +616,66 @@ mod tests {
             0,
             "a non-PlayStation disc must be skipped, not tagged as PlayStation"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fake but realistic-enough disc bytes to pass
+    /// `disc::iso_is_a_playstation2_disc`'s real signature check.
+    fn fake_playstation2_iso_bytes() -> Vec<u8> {
+        let mut image = vec![0u8; 40_000];
+        image[32768..32768 + 5].copy_from_slice(b"CD001");
+        image[33000..33000 + 5].copy_from_slice(b"BOOT2");
+        image
+    }
+
+    #[test]
+    fn a_loose_iso_with_a_boot2_line_is_playstation2() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-ps2-iso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        touch(&dir, "Some PS2 Game.iso", &fake_playstation2_iso_bytes());
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::PlayStation2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `.iso` is occasionally a single-track PS1 dump too — it must resolve
+    /// to PS1, not PS2, when the disc's own `SYSTEM.CNF` says so.
+    #[test]
+    fn a_loose_iso_without_boot2_but_with_a_playstation_label_is_playstation() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-ps1-iso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        touch(&dir, "Some PS1 Game.iso", &fake_playstation_track_bytes());
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::PlayStation);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loose_iso_matching_neither_signature_is_skipped_not_misclassified() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-not-ps-iso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut not_ps_image = vec![0u8; 40_000];
+        not_ps_image[32768..32768 + 5].copy_from_slice(b"CD001");
+        touch(&dir, "Some Other System Game.iso", &not_ps_image);
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -800,6 +874,25 @@ mod tests {
             games[0].rom_path.ends_with(".zip"),
             "the zip itself is served, not an extracted file"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn identifies_a_zipped_playstation2_iso_by_peeking_inside_the_zip() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-zip-ps2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_zip(
+            &dir.join("Some PS2 Game.zip"),
+            &[("Some PS2 Game.iso", &fake_playstation2_iso_bytes())],
+        );
+
+        let games = scan_directories(&[dir.to_string_lossy().to_string()]);
+
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].platform, Platform::PlayStation2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

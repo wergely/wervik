@@ -716,31 +716,10 @@
   box-shadow: var(--shadow-focus);
 }
 
-/* Play (plus everything needed to configure it) sticks to the top of
-   `.info`'s own scroll area once the user scrolls past it — see the
-   comment at its call site in GameDetail.tsx for why. No negative margins
-   here: `.info` clips to its own rounded corners once scrolled (overflow-y
-   auto makes overflow-x compute to auto too), so a flush edge-to-edge bar
-   would visibly clash with them once stuck at the top. */
-.actionsBar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  margin-bottom: 22px;
-  padding: 14px 0 18px;
-  background: rgba(9, 11, 16, 0.94);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
 .actions {
   display: flex;
   align-items: center;
   gap: 16px;
-  flex-wrap: wrap;
 }
 
 .playButton {

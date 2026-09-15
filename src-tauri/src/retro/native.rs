@@ -286,6 +286,27 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
                 required_system_libs: &[],
             },
         ],
+        // No libretro/EmulatorJS core exists for PS2 at anywhere near
+        // usable quality (RetroArch's only PS2 core, "Play!", is far behind
+        // standalone PCSX2 in both compatibility and performance) — PCSX2
+        // itself is the only real option, launched directly rather than
+        // through RetroArch. `-portable` keeps its config/memory
+        // cards/BIOS search path inside its own managed directory instead
+        // of the user's system config folder (verified against the real
+        // binary's `-h` output, same as every flag below).
+        Platform::PlayStation2 => vec![NativeEmulator {
+            id: "pcsx2",
+            display_name: "PCSX2",
+            launcher: Launcher::Managed,
+            recommended: true,
+            launch_args: &["-portable", "-batch", "-fullscreen", "{rom}"],
+            settings_args: &["-portable"],
+            // PCSX2 (in portable mode) looks for the user-supplied PS2 BIOS
+            // dump in a `bios` folder inside its own data directory —
+            // verified against the real binary's embedded BIOS-setup text.
+            bios_relpath: Some("bios/"),
+            required_system_libs: &[],
+        }],
     }
 }
 
@@ -325,9 +346,27 @@ enum ManagedKind {
     /// once at install time into its own `<id>-files/` directory;
     /// `binary_name` is the executable's name inside it.
     ZippedBinary { binary_name: &'static str },
+    /// Same idea as `ZippedBinary`, but the asset is a `.7z` archive (e.g.
+    /// PCSX2's official Windows portable release) rather than a `.zip` —
+    /// extracted via `sevenz_rust` instead of the `zip` crate, same as
+    /// `install_retroarch` already does for RetroArch's own portable package.
+    SevenZipBinary { binary_name: &'static str },
     /// RetroArch is distributed as an official Windows portable archive and
     /// its cores as small per-core archives from the official Libretro buildbot.
     RetroArch { core_name: &'static str },
+}
+
+/// Whether `emulator_id`'s release is actually RetroArch (as opposed to
+/// some other `Launcher::Managed` emulator, e.g. PCSX2) — every managed
+/// emulator on Windows used to be RetroArch-based, so `ensure_retroarch_defaults`
+/// used to be safe to call for any `Launcher::Managed` emulator; that
+/// stopped being true once a non-RetroArch one (PCSX2) existed.
+#[cfg(target_os = "windows")]
+fn is_retroarch_based(emulator_id: &str) -> bool {
+    matches!(
+        managed_release_for(emulator_id).map(|release| release.kind),
+        Some(ManagedKind::RetroArch { .. })
+    )
 }
 
 const RETROARCH_WINDOWS_PORTABLE: &str =
@@ -401,6 +440,20 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
         "retroarch-neogeopocket" => Some(retroarch_core("mednafen_ngp")),
         "retroarch-pcengine" => Some(retroarch_core("mednafen_pce")),
         "retroarch-colecovision" => Some(retroarch_core("gearcoleco")),
+        // PCSX2's official Windows release is a portable `.7z` with
+        // `pcsx2-qt.exe` sitting at the archive root (verified against the
+        // real v2.8.2 asset) — `asset_name`'s `*` stands in for the version
+        // number the real filename embeds (e.g. `pcsx2-v2.8.2-windows-x64-Qt.7z`),
+        // which changes on every release.
+        "pcsx2" => Some(ManagedRelease {
+            source: DownloadSource::Github {
+                repo: "PCSX2/pcsx2",
+                asset_name: "pcsx2-*-windows-x64-Qt.7z",
+            },
+            kind: ManagedKind::SevenZipBinary {
+                binary_name: "pcsx2-qt.exe",
+            },
+        }),
         _ => None,
     }
 }
@@ -427,7 +480,8 @@ fn managed_executable_path(app_data_dir: &Path, id: &str) -> PathBuf {
             .join(format!("{id}-appimage"))
             .join("squashfs-root")
             .join("AppRun"),
-        Some(ManagedKind::ZippedBinary { binary_name }) => managed_dir(app_data_dir)
+        Some(ManagedKind::ZippedBinary { binary_name })
+        | Some(ManagedKind::SevenZipBinary { binary_name }) => managed_dir(app_data_dir)
             .join(format!("{id}-files"))
             .join(binary_name),
         _ => managed_dir(app_data_dir).join(id),
@@ -790,6 +844,20 @@ fn make_executable(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Most managed releases (DuckStation, gopher64, FBNeo...) ship under a
+/// fixed asset filename every release, so an exact match is enough. PCSX2's
+/// real Windows asset embeds its version in the name (e.g.
+/// `pcsx2-v2.8.2-windows-x64-Qt.7z`, verified against its actual GitHub
+/// release), which would silently stop matching on every new release if
+/// hardcoded — `pattern` may contain one `*` standing in for that varying
+/// part.
+fn asset_name_matches(actual: &str, pattern: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((prefix, suffix)) => actual.starts_with(prefix) && actual.ends_with(suffix),
+        None => actual == pattern,
+    }
+}
+
 fn download_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, String> {
     agent
         .get(url)
@@ -823,7 +891,7 @@ fn download_managed_release(
             github_release
                 .assets
                 .iter()
-                .find(|asset| asset.name == asset_name)
+                .find(|asset| asset_name_matches(&asset.name, asset_name))
                 .map(|asset| asset.browser_download_url.clone())
                 .ok_or_else(|| {
                     format!("{}'s latest release has no compatible build.", display_name)
@@ -995,6 +1063,17 @@ pub fn install(app_data_dir: &Path, platform: Platform, emulator_id: &str) -> Re
 
             make_executable(&extract_dir.join(binary_name))?;
         }
+        ManagedKind::SevenZipBinary { binary_name } => {
+            // Extracted fresh each install/update, same reasoning as the
+            // AppImage/ZippedBinary cases above.
+            let extract_dir = dir.join(format!("{}-files", emulator.id));
+            let _ = std::fs::remove_dir_all(&extract_dir);
+
+            sevenz_rust::decompress(std::io::Cursor::new(bytes), &extract_dir)
+                .map_err(|e| format!("Could not extract {}: {e}", emulator.display_name))?;
+
+            make_executable(&extract_dir.join(binary_name))?;
+        }
         ManagedKind::RetroArch { .. } => {
             unreachable!("RetroArch is installed by install_retroarch")
         }
@@ -1143,7 +1222,7 @@ fn emulator_path(app_data_dir: &Path, emulator: &NativeEmulator) -> String {
 /// this is a settings screen, not a game session.
 pub fn open_settings(app_data_dir: &Path, emulator: NativeEmulator) -> Result<Child, String> {
     #[cfg(target_os = "windows")]
-    if matches!(emulator.launcher, Launcher::Managed) {
+    if is_retroarch_based(emulator.id) {
         ensure_retroarch_defaults(app_data_dir)?;
     }
 
@@ -1182,7 +1261,7 @@ pub fn spawn(
     #[cfg(target_os = "windows")]
     {
         let _ = (setup_dir, platform_key);
-        if matches!(emulator.launcher, Launcher::Managed) {
+        if is_retroarch_based(emulator.id) {
             ensure_retroarch_defaults(app_data_dir)?;
         }
     }
@@ -1874,6 +1953,30 @@ mod windows_tests {
     }
 
     #[test]
+    fn builds_the_pcsx2_executable_path_and_cli_arguments() {
+        let app_data_dir = Path::new(r"C:\Users\tester\AppData\Roaming\Wervik");
+        let emulator = native_emulators_for(Platform::PlayStation2)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(emulator.id, "pcsx2");
+        assert!(emulator.recommended);
+
+        let executable = managed_executable_path(app_data_dir, emulator.id);
+        assert!(executable.ends_with(r"emulators\pcsx2-files\pcsx2-qt.exe"));
+
+        let argv = build_argv(
+            app_data_dir,
+            emulator,
+            Path::new(r"D:\Games\Some Game.iso"),
+            app_data_dir,
+            "play_station_2",
+        );
+        assert_eq!(argv[0], executable.to_string_lossy());
+        assert_eq!(&argv[1..], &["-portable", "-batch", "-fullscreen", r"D:\Games\Some Game.iso"]);
+    }
+
+    #[test]
     fn finds_retroarch_executable_inside_the_portable_package_directory() {
         let root =
             std::env::temp_dir().join(format!("wervik-retroarch-layout-{}", std::process::id()));
@@ -1962,7 +2065,7 @@ mod windows_tests {
 // the `not(target_os = "windows")` variant of `native_emulators_for`, which
 // is a different function entirely (see the `#[cfg]` on each).
 #[cfg(all(test, target_os = "windows"))]
-mod windows_tests {
+mod windows_release_tests {
     use super::*;
 
     #[test]
@@ -1978,6 +2081,18 @@ mod windows_tests {
                 }
             }
         }
+    }
+
+    /// Regression test: `ensure_retroarch_defaults` used to run for any
+    /// `Launcher::Managed` emulator, which was safe only because every
+    /// managed Windows emulator used to be RetroArch-based — PCSX2 broke
+    /// that assumption, and calling it for PCSX2 would spuriously create an
+    /// empty `emulators/retroarch/` directory that was never installed.
+    #[test]
+    fn only_retroarch_based_emulators_trigger_retroarch_defaults() {
+        assert!(is_retroarch_based("retroarch-neocd"));
+        assert!(is_retroarch_based("retroarch-mupen64plus-next"));
+        assert!(!is_retroarch_based("pcsx2"));
     }
 
     #[test]

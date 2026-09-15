@@ -37,12 +37,13 @@ pub enum Platform {
     ColecoVision,
     Arcade,
     NeoGeoCd,
+    PlayStation2,
 }
 
 impl Platform {
     /// Every platform Wervik knows about, for UI listings (e.g. the
     /// Settings "Platforms" section) and exhaustiveness tests.
-    pub const ALL: [Platform; 21] = [
+    pub const ALL: [Platform; 22] = [
         Platform::Nes,
         Platform::Snes,
         Platform::GameBoy,
@@ -64,6 +65,7 @@ impl Platform {
         Platform::ColecoVision,
         Platform::Arcade,
         Platform::NeoGeoCd,
+        Platform::PlayStation2,
     ];
 
     /// A stable machine-readable key, independent of the JSON wire format
@@ -94,6 +96,7 @@ impl Platform {
             Platform::ColecoVision => "coleco_vision",
             Platform::Arcade => "arcade",
             Platform::NeoGeoCd => "neo_geo_cd",
+            Platform::PlayStation2 => "play_station_2",
         }
     }
 
@@ -128,6 +131,7 @@ impl Platform {
             Platform::ColecoVision => "ColecoVision",
             Platform::Arcade => "Arcade",
             Platform::NeoGeoCd => "Neo Geo CD",
+            Platform::PlayStation2 => "PlayStation 2",
         }
     }
 
@@ -155,6 +159,7 @@ impl Platform {
             Platform::ColecoVision => "ColecoVision",
             Platform::Arcade => "Arcade",
             Platform::NeoGeoCd => "Neo Geo CD",
+            Platform::PlayStation2 => "PS2",
         }
     }
 
@@ -184,7 +189,7 @@ impl Platform {
             Platform::NeoGeoPocket => "mednafen_ngp",
             Platform::PcEngine => "mednafen_pce",
             Platform::ColecoVision => "gearcoleco",
-            Platform::Arcade | Platform::NeoGeoCd => return None,
+            Platform::Arcade | Platform::NeoGeoCd | Platform::PlayStation2 => return None,
         })
     }
 
@@ -192,7 +197,10 @@ impl Platform {
     /// opposed to systems where a BIOS is optional (e.g. just for a boot
     /// logo). Wervik never provides BIOS files itself — see `retro::bios`.
     pub fn requires_bios(self) -> bool {
-        matches!(self, Platform::PlayStation | Platform::NeoGeoCd)
+        matches!(
+            self,
+            Platform::PlayStation | Platform::NeoGeoCd | Platform::PlayStation2
+        )
     }
 
     /// The platform's own name(s) as they appear in IGDB's `platforms.name`
@@ -228,6 +236,7 @@ impl Platform {
             Platform::ColecoVision => &["ColecoVision"],
             Platform::Arcade => &["Arcade"],
             Platform::NeoGeoCd => &["Neo Geo CD"],
+            Platform::PlayStation2 => &["PlayStation 2"],
         }
     }
 
@@ -258,6 +267,12 @@ impl Platform {
             // before trusting this (see `disc::cue_references_a_playstation_disc`
             // and its Neo Geo CD counterpart).
             "cue" | "chd" => Some(Platform::PlayStation),
+            // Also a provisional guess: a `.iso` is occasionally a
+            // single-track PS1 dump too, not just PS2's own (near-universal)
+            // format — `discovery` re-checks `SYSTEM.CNF`'s `BOOT`/`BOOT2`
+            // line before trusting this (see
+            // `disc::iso_is_a_playstation2_disc` and its PS1 counterpart).
+            "iso" => Some(Platform::PlayStation2),
             "n64" | "v64" | "z64" => Some(Platform::Nintendo64),
             "a52" => Some(Platform::Atari5200),
             "a78" => Some(Platform::Atari7800),
@@ -339,6 +354,10 @@ mod tests {
         assert_eq!(
             Platform::from_unambiguous_extension("cv"),
             Some(Platform::ColecoVision)
+        );
+        assert_eq!(
+            Platform::from_unambiguous_extension("iso"),
+            Some(Platform::PlayStation2)
         );
     }
 

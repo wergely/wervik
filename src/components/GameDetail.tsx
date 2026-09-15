@@ -459,135 +459,6 @@ export function GameDetail({
             )}
           </div>
 
-          {/* Play is the single most important control on this screen, so it
-              (and everything needed to configure it — variant picker, BIOS
-              prompt, launch errors) sits right after the title/meta row and
-              stays sticky while the rest of the page scrolls, instead of
-              landing after metadata/achievements/mods where a shorter
-              window could push it out of view entirely. */}
-          <div className={styles.actionsBar}>
-            {game.variants.length > 0 && (
-              <div className={styles.variantRow}>
-                <label className={styles.variantLabel} htmlFor="game-variant-select">
-                  Version
-                </label>
-                <select
-                  id="game-variant-select"
-                  className={styles.variantSelect}
-                  data-nav-item
-                  value={selectedVariantId ?? ""}
-                  onChange={(e) => setSelectedVariantId(e.target.value || null)}
-                >
-                  <option value="">{game.defaultRegion ?? "Default"}</option>
-                  {game.variants.map((variant) => (
-                    <option key={variant.id} value={variant.id}>
-                      {variant.name || variant.region}
-                      {variant.name && variant.region !== "Original" ? ` · ${variant.region}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            <div className={styles.actions}>
-              <button
-                type="button"
-                ref={playButtonRef}
-                className={`${styles.playButton} ${isPlaying ? styles.playButtonPlaying : ""}`}
-                data-nav-item
-                onClick={handlePlay}
-                disabled={launching || isPlaying}
-                aria-busy={launching}
-              >
-                {launching ? (
-                  <>
-                    <Spinner />
-                    {game.isInstalled ? "Launching…" : "Installing…"}
-                  </>
-                ) : isPlaying ? (
-                  "● Playing"
-                ) : !game.isInstalled ? (
-                  "↓ Install"
-                ) : (
-                  "▶ Play"
-                )}
-              </button>
-              {game.nativeEmulator && game.platformKey && (
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  data-nav-item
-                  onClick={handleOpenEmulatorSettings}
-                  aria-label={`Open ${game.nativeEmulator} settings — controller, video, audio`}
-                >
-                  ⚙ {game.nativeEmulator} Settings
-                </button>
-              )}
-              <button
-                type="button"
-                className={`${styles.secondaryButton} ${game.isFavorite ? styles.active : ""}`}
-                data-nav-item
-                onClick={() => onToggleFavorite(game.id)}
-                aria-pressed={game.isFavorite}
-              >
-                {game.isFavorite ? "★ Favorited" : "☆ Favorite"}
-              </button>
-              <button
-                type="button"
-                className={`${styles.reactionButton} ${game.reaction === "like" ? styles.likeActive : ""}`}
-                data-nav-item
-                onClick={() => onSetReaction(game.id, game.reaction === "like" ? null : "like")}
-                aria-pressed={game.reaction === "like"}
-                aria-label={game.reaction === "like" ? "Remove like" : "Like this game"}
-              >
-                <span aria-hidden="true">👍</span>
-              </button>
-              <button
-                type="button"
-                className={`${styles.reactionButton} ${game.reaction === "dislike" ? styles.dislikeActive : ""}`}
-                data-nav-item
-                onClick={() => onSetReaction(game.id, game.reaction === "dislike" ? null : "dislike")}
-                aria-pressed={game.reaction === "dislike"}
-                aria-label={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
-              >
-                <span aria-hidden="true">👎</span>
-              </button>
-              <OverflowMenu
-                open={overflowOpen}
-                onOpen={() => setOverflowOpen(true)}
-                onClose={() => setOverflowOpen(false)}
-                onShowFiles={
-                  game.isInstalled
-                    ? () =>
-                        (game.source === "steam" && game.appId != null
-                          ? openInstallFolder(game.appId)
-                          : game.source === "xbox"
-                            ? openXboxFolder(game.id)
-                            : game.source === "battlenet"
-                              ? openBattleNetFolder(game.id)
-                              : game.source === "ea"
-                                ? openEaFolder(game.id)
-                              : openRomFolder(game.id)
-                        ).catch(() => {})
-                    : undefined
-                }
-                onOpenSteamPage={
-                  game.source === "steam" && game.appId != null
-                    ? () => openSteamPage(game.appId!).catch(() => {})
-                    : undefined
-                }
-                registerBackHandler={registerBackHandler}
-                registerNavScope={registerNavScope}
-              />
-            </div>
-
-            {game.source === "retro" && game.requiresBios && game.platformKey && (
-              <BiosControl platformKey={game.platformKey} platformName={game.platform ?? "This platform"} />
-            )}
-
-            {launchError && <p className={styles.launchError}>{launchError}</p>}
-          </div>
-
           {metadataLoading && <p className={styles.metadataStatus}>Loading game details…</p>}
           {metadata && (
             <section className={styles.metadata} aria-label="Game information">
@@ -748,6 +619,127 @@ export function GameDetail({
           )}
 
           <ActiveFeaturesRow features={activeFeatures(game)} />
+
+          {game.variants.length > 0 && (
+            <div className={styles.variantRow}>
+              <label className={styles.variantLabel} htmlFor="game-variant-select">
+                Version
+              </label>
+              <select
+                id="game-variant-select"
+                className={styles.variantSelect}
+                data-nav-item
+                value={selectedVariantId ?? ""}
+                onChange={(e) => setSelectedVariantId(e.target.value || null)}
+              >
+                <option value="">{game.defaultRegion ?? "Default"}</option>
+                {game.variants.map((variant) => (
+                  <option key={variant.id} value={variant.id}>
+                    {variant.name || variant.region}
+                    {variant.name && variant.region !== "Original" ? ` · ${variant.region}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className={styles.actions}>
+            <button
+              type="button"
+              ref={playButtonRef}
+              className={`${styles.playButton} ${isPlaying ? styles.playButtonPlaying : ""}`}
+              data-nav-item
+              onClick={handlePlay}
+              disabled={launching || isPlaying}
+              aria-busy={launching}
+            >
+              {launching ? (
+                <>
+                  <Spinner />
+                  {game.isInstalled ? "Launching…" : "Installing…"}
+                </>
+              ) : isPlaying ? (
+                "● Playing"
+              ) : !game.isInstalled ? (
+                "↓ Install"
+              ) : (
+                "▶ Play"
+              )}
+            </button>
+            {game.nativeEmulator && game.platformKey && (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                data-nav-item
+                onClick={handleOpenEmulatorSettings}
+                aria-label={`Open ${game.nativeEmulator} settings — controller, video, audio`}
+              >
+                ⚙ {game.nativeEmulator} Settings
+              </button>
+            )}
+            <button
+              type="button"
+              className={`${styles.secondaryButton} ${game.isFavorite ? styles.active : ""}`}
+              data-nav-item
+              onClick={() => onToggleFavorite(game.id)}
+              aria-pressed={game.isFavorite}
+            >
+              {game.isFavorite ? "★ Favorited" : "☆ Favorite"}
+            </button>
+            <button
+              type="button"
+              className={`${styles.reactionButton} ${game.reaction === "like" ? styles.likeActive : ""}`}
+              data-nav-item
+              onClick={() => onSetReaction(game.id, game.reaction === "like" ? null : "like")}
+              aria-pressed={game.reaction === "like"}
+              aria-label={game.reaction === "like" ? "Remove like" : "Like this game"}
+            >
+              <span aria-hidden="true">👍</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.reactionButton} ${game.reaction === "dislike" ? styles.dislikeActive : ""}`}
+              data-nav-item
+              onClick={() => onSetReaction(game.id, game.reaction === "dislike" ? null : "dislike")}
+              aria-pressed={game.reaction === "dislike"}
+              aria-label={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
+            >
+              <span aria-hidden="true">👎</span>
+            </button>
+            <OverflowMenu
+              open={overflowOpen}
+              onOpen={() => setOverflowOpen(true)}
+              onClose={() => setOverflowOpen(false)}
+              onShowFiles={
+                game.isInstalled
+                  ? () =>
+                      (game.source === "steam" && game.appId != null
+                        ? openInstallFolder(game.appId)
+                        : game.source === "xbox"
+                          ? openXboxFolder(game.id)
+                          : game.source === "battlenet"
+                            ? openBattleNetFolder(game.id)
+                            : game.source === "ea"
+                              ? openEaFolder(game.id)
+                            : openRomFolder(game.id)
+                      ).catch(() => {})
+                  : undefined
+              }
+              onOpenSteamPage={
+                game.source === "steam" && game.appId != null
+                  ? () => openSteamPage(game.appId!).catch(() => {})
+                  : undefined
+              }
+              registerBackHandler={registerBackHandler}
+              registerNavScope={registerNavScope}
+            />
+          </div>
+
+          {game.source === "retro" && game.requiresBios && game.platformKey && (
+            <BiosControl platformKey={game.platformKey} platformName={game.platform ?? "This platform"} />
+          )}
+
+          {launchError && <p className={styles.launchError}>{launchError}</p>}
         </div>
       </div>
 

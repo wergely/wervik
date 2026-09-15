@@ -44,6 +44,18 @@ fn looks_like_neo_geo_cd_disc(data: &[u8]) -> bool {
     contains(data, b"CD001") && contains(data, b"IPL.TXT")
 }
 
+/// Real signature every PS2 disc carries: its `SYSTEM.CNF` boot file has a
+/// `BOOT2 = cdrom0:\...` line — the field the PS2 BIOS itself reads to find
+/// the boot ELF. PS1's own `SYSTEM.CNF` says `BOOT = cdrom:\...` instead (no
+/// "2"), so this only matches a real PS2 disc, not a PS1 one that happens to
+/// also be dumped as a single-track `.iso`. Checked before
+/// `looks_like_playstation_disc` wherever a candidate could be either, so a
+/// disc carrying both signatures (if that ever happens) still resolves to
+/// the more specific PS2 match.
+fn looks_like_playstation2_disc(data: &[u8]) -> bool {
+    contains(data, b"CD001") && contains(data, b"BOOT2")
+}
+
 /// The filename a `.cue` sheet's first `FILE "..."` line references — the
 /// disc's actual data track, which is what needs checking, not the cue
 /// sheet's own (tiny, plain-text) content.
@@ -129,6 +141,24 @@ pub(crate) fn chd_is_a_neo_geo_cd_disc(chd_path: &Path) -> bool {
     chd_matches(chd_path, looks_like_neo_geo_cd_disc)
 }
 
+/// Checks a loose `.iso`'s own content against `matches` — unlike `.cue`,
+/// a `.iso` is the complete disc image itself, so (like `.chd`) there's no
+/// separate track file to look up.
+fn iso_matches(iso_path: &Path, matches: impl Fn(&[u8]) -> bool) -> bool {
+    let Ok(file) = std::fs::File::open(iso_path) else {
+        return false;
+    };
+    matches(&read_prefix(file))
+}
+
+pub(crate) fn iso_is_a_playstation2_disc(iso_path: &Path) -> bool {
+    iso_matches(iso_path, looks_like_playstation2_disc)
+}
+
+pub(crate) fn iso_is_a_playstation_disc(iso_path: &Path) -> bool {
+    iso_matches(iso_path, looks_like_playstation_disc)
+}
+
 /// Same idea as `cue_matches`, but for a `.cue` entry *inside a zip* —
 /// reads the referenced track straight from the archive instead of the
 /// filesystem, and only decompresses as much of it as the probe size
@@ -179,6 +209,34 @@ pub(crate) fn zip_cue_references_a_neo_geo_cd_disc<R: Read + std::io::Seek>(
     cue_entry_name: &str,
 ) -> bool {
     zip_cue_matches(archive, cue_entry_name, looks_like_neo_geo_cd_disc)
+}
+
+/// Same idea as `zip_cue_matches`, but for a `.iso` entry inside a zip —
+/// no cue-sheet indirection needed, since the `.iso` entry itself is the
+/// whole disc image.
+fn zip_iso_matches<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    iso_entry_name: &str,
+    matches: impl Fn(&[u8]) -> bool,
+) -> bool {
+    let Ok(entry) = archive.by_name(iso_entry_name) else {
+        return false;
+    };
+    matches(&read_prefix(entry))
+}
+
+pub(crate) fn zip_iso_is_a_playstation2_disc<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    iso_entry_name: &str,
+) -> bool {
+    zip_iso_matches(archive, iso_entry_name, looks_like_playstation2_disc)
+}
+
+pub(crate) fn zip_iso_is_a_playstation_disc<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    iso_entry_name: &str,
+) -> bool {
+    zip_iso_matches(archive, iso_entry_name, looks_like_playstation_disc)
 }
 
 #[cfg(test)]
@@ -234,6 +292,40 @@ mod tests {
         assert!(looks_like_neo_geo_cd_disc(&fake_ngcd_track));
         // And, same as the real thing, it must not also look like PlayStation.
         assert!(!looks_like_playstation_disc(&fake_ngcd_track));
+    }
+
+    /// The real distinction between a PS1 and PS2 disc that motivated this
+    /// check: both carry a `SYSTEM.CNF`, but only PS2's says `BOOT2` (PS1's
+    /// says plain `BOOT`, no digit).
+    #[test]
+    fn boot2_is_required_to_look_like_playstation2() {
+        let mut fake_ps1_track = vec![0u8; 40_000];
+        fake_ps1_track[37649..37649 + 5].copy_from_slice(b"CD001");
+        fake_ps1_track[37700..37700 + 4].copy_from_slice(b"BOOT");
+        assert!(!looks_like_playstation2_disc(&fake_ps1_track));
+
+        let mut fake_ps2_track = vec![0u8; 40_000];
+        fake_ps2_track[37649..37649 + 5].copy_from_slice(b"CD001");
+        fake_ps2_track[37700..37700 + 5].copy_from_slice(b"BOOT2");
+        assert!(looks_like_playstation2_disc(&fake_ps2_track));
+    }
+
+    #[test]
+    fn iso_is_a_playstation2_disc_checks_the_files_own_content() {
+        let dir = std::env::temp_dir().join(format!("wervik-disc-iso-ps2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut image = vec![0u8; 40_000];
+        image[32768..32768 + 5].copy_from_slice(b"CD001");
+        image[33000..33000 + 5].copy_from_slice(b"BOOT2");
+        let iso_path = dir.join("Game.iso");
+        std::fs::write(&iso_path, &image).unwrap();
+
+        assert!(iso_is_a_playstation2_disc(&iso_path));
+        assert!(!iso_is_a_playstation_disc(&iso_path));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
