@@ -210,6 +210,106 @@ pub fn scan_directories(dirs: &[String]) -> Vec<RomGame> {
     dedupe_by_name(games)
 }
 
+/// A stable id for a tagged directory's own entries — keyed on the entry's
+/// full path alone, never its size. Unlike `stable_id` (used everywhere
+/// else), a directory-based game's total size can shift between rescans
+/// for reasons that have nothing to do with it being a different game
+/// (in-game saves, a title's own cache/shader files...), so hashing size in
+/// would spuriously churn the id and lose that game's favorite/playtime
+/// association on every such rescan.
+fn stable_path_id(path: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("rom-{:016x}", hasher.finish())
+}
+
+/// Total size of everything under `path`, walked recursively. Cheap in
+/// practice for what this is used for (see `scan_tagged_directory`): a
+/// handful of whole-game folders, not the thousands of individual ROM
+/// files the rest of `discovery` deliberately avoids touching the content
+/// of (see the module doc comment).
+fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| {
+            entry
+                .metadata()
+                .map(|metadata| {
+                    if metadata.is_dir() {
+                        dir_size(&entry.path())
+                    } else {
+                        metadata.len()
+                    }
+                })
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// Scans a single ROM directory the user has explicitly tagged with a
+/// platform (see `storage::RomDirectoryConfig`) — every immediate entry
+/// underneath it, file *or* folder, is trusted as-is to be one game of
+/// that platform. No extension check, no content sniffing: unlike
+/// `scan_directories`'s auto-detection, this is what lets a
+/// folder-per-game platform (a decrypted Wii U title's own
+/// `code`/`content`/`meta` layout, for instance) be recognized at all,
+/// since there is no file extension to key off of in the first place.
+/// Does not recurse *into* a matched folder — that folder's own contents
+/// are the game, not more games to discover.
+pub fn scan_tagged_directory(dir: &str, platform: Platform) -> Vec<RomGame> {
+    let root = Path::new(dir);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+
+    let mut games = Vec::new();
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Skip obvious clutter (a stray `.DS_Store`, a hidden dotfile) that
+        // isn't a real game, rather than surfacing it as a broken one.
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let is_dir = metadata.is_dir();
+        let size_bytes = if is_dir {
+            dir_size(&path)
+        } else {
+            metadata.len()
+        };
+        let modified_at = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let id = if is_dir {
+            stable_path_id(&path.to_string_lossy())
+        } else {
+            stable_id(file_name, size_bytes)
+        };
+
+        games.push(RomGame {
+            id,
+            name: clean_display_name(file_name),
+            platform,
+            rom_path: path.to_string_lossy().to_string(),
+            size_bytes,
+            modified_at,
+            variants: Vec::new(),
+        });
+    }
+    games
+}
+
 /// Collapses the same game appearing more than once in the library — e.g.
 /// a ROM set's main folder and its "Extras"/rerelease subfolder both
 /// having their own dump of "Super Mario World" — down to one entry per
@@ -1132,6 +1232,67 @@ mod tests {
         let games = scan_directories(&[dir.to_string_lossy().to_string()]);
         assert_eq!(games.len(), 1);
         assert_eq!(games[0].name, "Chrono Trigger");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exact real case this whole mechanism exists for: a platform
+    /// whose games are directories (a decrypted Wii U title's own
+    /// `code`/`content`/`meta` layout), not a single file with a
+    /// recognizable extension — auto-detection has no extension to key
+    /// off of, so it can never find these; a tagged directory doesn't need
+    /// one at all.
+    #[test]
+    fn a_tagged_directory_treats_every_entry_as_one_game_file_or_folder() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-tagged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let game_dir = dir.join("Some Game (USA)");
+        let content_dir = game_dir.join("content");
+        std::fs::create_dir_all(&content_dir).unwrap();
+        std::fs::write(content_dir.join("data.bin"), b"whatever-wii-u-content").unwrap();
+        touch(&dir, "Another Game.wua", b"single-file-dump");
+        touch(&dir, ".DS_Store", b"clutter");
+
+        let games = scan_tagged_directory(&dir.to_string_lossy(), Platform::Arcade);
+
+        assert_eq!(games.len(), 2, "the dotfile must not be treated as a game");
+        assert!(games.iter().all(|g| g.platform == Platform::Arcade));
+        let names: HashSet<_> = games.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(
+            names,
+            HashSet::from(["Some Game", "Another Game"]),
+            "a folder's own region tag is cleaned the same way a filename's is"
+        );
+        let folder_game = games.iter().find(|g| g.name == "Some Game").unwrap();
+        assert!(
+            folder_game.size_bytes > 0,
+            "a directory game's size is the real recursive total, not 0"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The real bug `stable_path_id` (as opposed to the usual `stable_id`)
+    /// guards against: a directory-based game's total size can legitimately
+    /// change between rescans (a save file, a shader cache...) without it
+    /// being a different game — hashing that size in would silently swap
+    /// its id and lose its favorite/playtime association.
+    #[test]
+    fn a_tagged_directory_games_id_survives_its_size_changing() {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-tagged-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let game_dir = dir.join("Some Game");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("save.dat"), b"small").unwrap();
+
+        let before = scan_tagged_directory(&dir.to_string_lossy(), Platform::Arcade);
+        std::fs::write(game_dir.join("save.dat"), b"a much larger save file now").unwrap();
+        let after = scan_tagged_directory(&dir.to_string_lossy(), Platform::Arcade);
+
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(before[0].id, after[0].id);
+        assert_ne!(before[0].size_bytes, after[0].size_bytes);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -179,6 +179,53 @@ impl Default for Settings {
     }
 }
 
+/// A configured ROM folder, with an optional explicit platform override.
+///
+/// Left as `None` (the default — every directory added before this field
+/// existed migrates to this), a directory keeps today's behavior: `walk`
+/// figures out each file's platform itself from its extension/content (see
+/// `retro::discovery`, `retro::disc`). Set, Wervik trusts it completely
+/// instead — no extension or content check at all, and (see
+/// `retro::discovery::scan_tagged_directory`) each immediate entry under
+/// the directory becomes one game whether it's a file *or a folder*, which
+/// is what actually lets Wervik support a platform whose own game dumps
+/// aren't single files (e.g. a decrypted Wii U title's
+/// `code`/`content`/`meta` layout) without teaching `disc.rs` a new
+/// content-sniffing check for every such case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RomDirectoryConfig {
+    pub path: String,
+    #[serde(default)]
+    pub platform_key: Option<String>,
+}
+
+/// Old saves have `romDirectories` as a plain list of path strings; this
+/// accepts either that or the new `{path, platformKey}` shape so opening
+/// an existing library never loses configured ROM folders.
+fn deserialize_rom_directories<'de, D>(deserializer: D) -> Result<Vec<RomDirectoryConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Entry {
+        Legacy(String),
+        Config(RomDirectoryConfig),
+    }
+    let entries = Vec::<Entry>::deserialize(deserializer)?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| match entry {
+            Entry::Legacy(path) => RomDirectoryConfig {
+                path,
+                platform_key: None,
+            },
+            Entry::Config(config) => config,
+        })
+        .collect())
+}
+
 /// Legacy accumulated playtime for a retro game. New sessions are written to
 /// SQLite, but this representation remains readable for migration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -200,8 +247,8 @@ pub struct StoredState {
     pub game_reactions: HashMap<String, String>,
     #[serde(default)]
     pub settings: Settings,
-    #[serde(default)]
-    pub rom_directories: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_rom_directories")]
+    pub rom_directories: Vec<RomDirectoryConfig>,
     #[serde(default)]
     pub retro_playtime: HashMap<String, RetroPlaytime>,
     /// Legacy last launch time for sources that do not expose their own
@@ -334,19 +381,34 @@ impl Store {
         self.persist();
     }
 
-    pub fn rom_directories(&self) -> Vec<String> {
+    pub fn rom_directories(&self) -> Vec<RomDirectoryConfig> {
         self.state.rom_directories.clone()
     }
 
-    pub fn add_rom_directory(&mut self, path: String) {
-        if !self.state.rom_directories.contains(&path) {
-            self.state.rom_directories.push(path);
+    pub fn add_rom_directory(&mut self, path: String, platform_key: Option<String>) {
+        if !self.state.rom_directories.iter().any(|dir| dir.path == path) {
+            self.state
+                .rom_directories
+                .push(RomDirectoryConfig { path, platform_key });
             self.persist();
         }
     }
 
+    /// Changes an already-added directory's platform override — `None`
+    /// reverts it to auto-detection. A no-op (returns `false`) if `path`
+    /// isn't a configured directory, so the caller can tell "nothing to
+    /// persist" apart from a real change.
+    pub fn set_rom_directory_platform(&mut self, path: &str, platform_key: Option<String>) -> bool {
+        let Some(dir) = self.state.rom_directories.iter_mut().find(|dir| dir.path == path) else {
+            return false;
+        };
+        dir.platform_key = platform_key;
+        self.persist();
+        true
+    }
+
     pub fn remove_rom_directory(&mut self, path: &str) {
-        self.state.rom_directories.retain(|p| p != path);
+        self.state.rom_directories.retain(|dir| dir.path != path);
         self.persist();
     }
 
@@ -500,6 +562,59 @@ mod tests {
 
         assert_eq!(settings.library_source_filter, vec!["retro"]);
         assert_eq!(settings.library_platform_filter, vec!["SNES"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrates_legacy_plain_string_rom_directories_to_untagged_configs() {
+        let dir = scratch_dir("migrate-rom-directories");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("wervik-state.json"),
+            r#"{"romDirectories":["D:\\Roms\\SNES","D:\\Roms\\Misc"]}"#,
+        )
+        .unwrap();
+
+        let store = Store::load(&dir);
+
+        assert_eq!(
+            store.rom_directories(),
+            vec![
+                RomDirectoryConfig {
+                    path: r"D:\Roms\SNES".to_string(),
+                    platform_key: None,
+                },
+                RomDirectoryConfig {
+                    path: r"D:\Roms\Misc".to_string(),
+                    platform_key: None,
+                },
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rom_directory_platform_override_round_trips() {
+        let dir = scratch_dir("rom-directory-platform");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::load(&dir);
+
+        store.add_rom_directory("D:\\Roms\\Arcade2".to_string(), None);
+        assert!(store.set_rom_directory_platform("D:\\Roms\\Arcade2", Some("arcade".to_string())));
+        assert_eq!(
+            store.rom_directories(),
+            vec![RomDirectoryConfig {
+                path: "D:\\Roms\\Arcade2".to_string(),
+                platform_key: Some("arcade".to_string()),
+            }]
+        );
+
+        // Persisted, not just in memory — a fresh load sees the same override.
+        let reloaded = Store::load(&dir);
+        assert_eq!(reloaded.rom_directories(), store.rom_directories());
+
+        assert!(!store.set_rom_directory_platform("D:\\Not\\Configured", Some("nes".to_string())));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

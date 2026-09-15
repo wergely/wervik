@@ -33,7 +33,7 @@ use crate::steam::launch;
 use crate::steam::launch_options;
 use crate::steam::library::{self, Game};
 use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
-use crate::storage::{Settings, Store};
+use crate::storage::{RomDirectoryConfig, Settings, Store};
 use crate::xbox::discovery::XboxGame;
 
 pub struct AppState {
@@ -354,7 +354,21 @@ impl AppState {
 
         std::thread::spawn(move || {
             let _ = app_handle.emit("rom-scan-status", true);
-            let scanned = retro_discovery::scan_directories(&dirs);
+            let (tagged, untagged): (Vec<_>, Vec<_>) =
+                dirs.into_iter().partition(|dir| dir.platform_key.is_some());
+            let mut scanned =
+                retro_discovery::scan_directories(&untagged.into_iter().map(|dir| dir.path).collect::<Vec<_>>());
+            for dir in tagged {
+                // `platform_key` is only `Some` here (guaranteed by the
+                // `partition` above); an unrecognized key (e.g. a save from
+                // a newer Wervik version with a platform this one doesn't
+                // know) is silently skipped rather than treated as a fatal
+                // scan error — same "don't guess" policy the rest of this
+                // module follows.
+                if let Some(platform) = dir.platform_key.as_deref().and_then(Platform::from_key) {
+                    scanned.extend(retro_discovery::scan_tagged_directory(&dir.path, platform));
+                }
+            }
             if let Some(state_handle) = app_handle.try_state::<AppStateHandle>() {
                 let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
                 state.rom_games = scanned;
@@ -1707,14 +1721,35 @@ pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
 }
 
 #[tauri::command(async)]
-pub fn get_rom_directories(state: State<AppStateHandle>) -> Vec<String> {
+pub fn get_rom_directories(state: State<AppStateHandle>) -> Vec<RomDirectoryConfig> {
     state.lock().unwrap_or_else(|e| e.into_inner()).store.rom_directories()
 }
 
 #[tauri::command(async)]
-pub fn add_rom_directory(state: State<AppStateHandle>, path: String) -> LibrarySnapshot {
+pub fn add_rom_directory(
+    state: State<AppStateHandle>,
+    path: String,
+    platform_key: Option<String>,
+) -> LibrarySnapshot {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    state.store.add_rom_directory(path);
+    state.store.add_rom_directory(path, platform_key);
+    state.spawn_rom_scan();
+    library_snapshot(&state)
+}
+
+/// Sets (or, with `platform_key: None`, clears) an already-added
+/// directory's platform override — see `storage::RomDirectoryConfig`.
+/// Always rescans afterward: changing the override changes how every file
+/// (or, for a tagged directory, every folder) underneath it is
+/// interpreted, not just newly added ones.
+#[tauri::command(async)]
+pub fn set_rom_directory_platform(
+    state: State<AppStateHandle>,
+    path: String,
+    platform_key: Option<String>,
+) -> LibrarySnapshot {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.store.set_rom_directory_platform(&path, platform_key);
     state.spawn_rom_scan();
     library_snapshot(&state)
 }

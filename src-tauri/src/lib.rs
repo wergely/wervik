@@ -240,6 +240,7 @@ pub fn run() {
             commands::apply_game_setup,
             commands::get_rom_directories,
             commands::add_rom_directory,
+            commands::set_rom_directory_platform,
             commands::remove_rom_directory,
             commands::rescan_retro_library,
             commands::get_rom_scan_status,

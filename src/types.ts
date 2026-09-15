@@ -324,6 +324,14 @@ export interface EmulatorOption {
   recommended: boolean;
 }
 
+export interface RomDirectoryConfig {
+  path: string;
+  /** Explicit platform override for every ROM under this directory — see
+   * `Platform::key()` on the Rust side for the exact string. `null` keeps
+   * today's auto-detection by file extension/content. */
+  platformKey: string | null;
+}
+
 export interface PlatformStatus {
   key: string;
   displayName: string;

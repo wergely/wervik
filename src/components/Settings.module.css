@@ -219,9 +219,27 @@
 }
 
 .romPath {
+  flex: 1;
+  min-width: 0;
   color: var(--text-secondary);
   font-size: 0.82rem;
   word-break: break-all;
+}
+
+.romPlatformSelect {
+  flex-shrink: 0;
+  width: 170px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+
+.romPlatformSelect:focus-visible {
+  border-color: var(--violet);
+  box-shadow: var(--shadow-focus);
 }
 
 .romRemoveButton {

@@ -13,6 +13,7 @@ import type {
   RaGameAchievements,
   RaProfileSummary,
   RetroLaunch,
+  RomDirectoryConfig,
   Settings,
   SteamGameAchievements,
 } from "../types";
@@ -186,12 +187,17 @@ export function applyGameSetup(appId: number, input: GameSetupInput): Promise<Ga
   return invoke("apply_game_setup", { appId, input });
 }
 
-export function getRomDirectories(): Promise<string[]> {
+export function getRomDirectories(): Promise<RomDirectoryConfig[]> {
   return invoke("get_rom_directories");
 }
 
-export function addRomDirectory(path: string): Promise<LibrarySnapshot> {
-  return invoke("add_rom_directory", { path });
+export function addRomDirectory(path: string, platformKey?: string | null): Promise<LibrarySnapshot> {
+  return invoke("add_rom_directory", { path, platformKey: platformKey ?? null });
+}
+
+/** `platformKey: null` reverts the directory to auto-detection. */
+export function setRomDirectoryPlatform(path: string, platformKey: string | null): Promise<LibrarySnapshot> {
+  return invoke("set_rom_directory_platform", { path, platformKey });
 }
 
 export function removeRomDirectory(path: string): Promise<LibrarySnapshot> {

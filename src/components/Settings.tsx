@@ -3,13 +3,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import {
   addRomDirectory,
   applyRetroArchAchievements,
+  getPlatformStatus,
   getRomDirectories,
   refreshAllMetadata,
   removeRomDirectory,
   rescanRetroLibrary,
+  setRomDirectoryPlatform,
 } from "../api/tauri";
 import { useMetadataProgress } from "../hooks/useMetadataProgress";
-import type { LibrarySnapshot, Settings as SettingsType } from "../types";
+import type { LibrarySnapshot, PlatformStatus, RomDirectoryConfig, Settings as SettingsType } from "../types";
 import { Spinner } from "./Spinner";
 import { Switch } from "./Switch";
 import styles from "./Settings.module.css";
@@ -493,14 +495,20 @@ export function Settings({
 }: SettingsProps) {
   const [category, setCategory] = useState<Category>("steam");
   const scaleIndex = settings ? SCALE_STEPS.indexOf(settings.uiScale) : -1;
-  const [romDirectories, setRomDirectories] = useState<string[]>([]);
+  const [romDirectories, setRomDirectories] = useState<RomDirectoryConfig[]>([]);
+  // Every platform Wervik knows about, for the "force this platform" picker
+  // next to each ROM folder — unfiltered (unlike `PlatformsView`, which only
+  // shows ones with ROMs already found), since a directory can be tagged
+  // before anything's been recognized inside it yet.
+  const [allPlatforms, setAllPlatforms] = useState<PlatformStatus[]>([]);
   // Which ROM-folder action is in flight, if any — lets each button show
   // its own "in progress" state instead of one generic flag for all three.
-  const [pendingAction, setPendingAction] = useState<"add" | "rescan" | { remove: string } | null>(null);
+  const [pendingAction, setPendingAction] = useState<"add" | "rescan" | { row: string } | null>(null);
   const romScanning = pendingAction !== null;
 
   useEffect(() => {
     getRomDirectories().then(setRomDirectories);
+    getPlatformStatus().then(setAllPlatforms);
   }, []);
 
   async function handleAddRomDirectory() {
@@ -516,8 +524,19 @@ export function Settings({
     }
   }
 
+  async function handleSetRomDirectoryPlatform(path: string, platformKey: string) {
+    setPendingAction({ row: path });
+    try {
+      const snapshot = await setRomDirectoryPlatform(path, platformKey || null);
+      onLibraryChange(snapshot);
+      setRomDirectories(await getRomDirectories());
+    } finally {
+      setPendingAction(null);
+    }
+  }
+
   async function handleRemoveRomDirectory(path: string) {
-    setPendingAction({ remove: path });
+    setPendingAction({ row: path });
     try {
       const snapshot = await removeRomDirectory(path);
       onLibraryChange(snapshot);
@@ -712,21 +731,39 @@ export function Settings({
               {romDirectories.length > 0 && (
                 <div className={styles.romList}>
                   {romDirectories.map((dir) => {
-                    const removing =
-                      typeof pendingAction === "object" && pendingAction !== null && pendingAction.remove === dir;
+                    const busy =
+                      typeof pendingAction === "object" && pendingAction !== null && pendingAction.row === dir.path;
                     return (
-                      <div key={dir} className={styles.romListItem}>
-                        <span className={styles.romPath}>{dir}</span>
+                      <div key={dir.path} className={styles.romListItem}>
+                        <span className={styles.romPath} title={dir.path}>
+                          {dir.path}
+                        </span>
+                        <select
+                          className={styles.romPlatformSelect}
+                          data-nav-item
+                          value={dir.platformKey ?? ""}
+                          disabled={romScanning}
+                          aria-label={`Platform override for ${dir.path}`}
+                          title="Force every ROM in this folder to one platform, skipping auto-detection — useful for a platform whose games are folders, not single files (e.g. Wii U)"
+                          onChange={(e) => handleSetRomDirectoryPlatform(dir.path, e.target.value)}
+                        >
+                          <option value="">Auto-detect</option>
+                          {allPlatforms.map((platform) => (
+                            <option key={platform.key} value={platform.key}>
+                              {platform.displayName}
+                            </option>
+                          ))}
+                        </select>
                         <button
                           type="button"
                           className={styles.romRemoveButton}
                           data-nav-item
-                          onClick={() => handleRemoveRomDirectory(dir)}
+                          onClick={() => handleRemoveRomDirectory(dir.path)}
                           disabled={romScanning}
-                          aria-label={`Remove ${dir}`}
+                          aria-label={`Remove ${dir.path}`}
                         >
-                          {removing && <Spinner />}
-                          {removing ? "Removing…" : "Remove"}
+                          {busy && <Spinner />}
+                          {busy ? "Working…" : "Remove"}
                         </button>
                       </div>
                     );
