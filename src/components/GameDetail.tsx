@@ -58,11 +58,6 @@ function MetadataScreenshot({
       type="button"
       className={styles.screenshotButton}
       data-nav-item
-      onPointerDown={(event) => {
-        if (event.button !== 0) return;
-        event.preventDefault();
-        onOpen(path, event.currentTarget);
-      }}
       onClick={(event) => onOpen(path, event.currentTarget)}
       aria-label={`Open screenshot ${index + 1} full screen`}
     >
@@ -120,7 +115,7 @@ export function GameDetail({
   // `null` means "play the default version" — see `Game.variants`.
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
   const playButtonRef = useRef<HTMLButtonElement>(null);
-  const lightboxRef = useRef<HTMLDialogElement>(null);
+  const lightboxRef = useRef<HTMLDivElement>(null);
   const lightboxTriggerRef = useRef<HTMLButtonElement>(null);
   const gameHero = useArtwork(game.heroPath ?? game.coverPath);
   const gameCover = useArtwork(game.coverPath);
@@ -168,20 +163,6 @@ export function GameDetail({
 
   useEffect(() => {
     setLightboxZoom(1);
-  }, [lightboxPath]);
-
-  useEffect(() => {
-    const dialog = lightboxRef.current;
-    if (!lightboxPath || !dialog) return;
-    try {
-      if (!dialog.open) dialog.showModal();
-    } catch {
-      // Older WebView builds may not expose the dialog top layer. The same
-      // element still has the fixed overlay styles as a graceful fallback.
-    }
-    return () => {
-      if (dialog.open) dialog.close();
-    };
   }, [lightboxPath]);
 
   function openLightbox(path: string, trigger: HTMLButtonElement) {
@@ -506,12 +487,16 @@ export function GameDetail({
       </div>
 
       {lightboxPath && createPortal(
-        <dialog
+        <div
           ref={lightboxRef}
           className={styles.lightbox}
+          role="dialog"
+          aria-modal="true"
           aria-label="Screenshot preview"
-          onCancel={(event) => {
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
             event.preventDefault();
+            event.stopPropagation();
             closeLightbox();
           }}
           onClick={(event) => {
@@ -561,7 +546,7 @@ export function GameDetail({
               +
             </button>
           </div>
-        </dialog>,
+        </div>,
         document.body,
       )}
 
