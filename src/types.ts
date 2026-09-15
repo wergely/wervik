@@ -1,0 +1,243 @@
+export type GameSource = "steam" | "retro" | "xbox" | "battlenet";
+export type GameReaction = "like" | "dislike";
+
+export interface Game {
+  /** Unified id: a Steam app id as a string, or a ROM's stable id. Use this
+   * for favorites/navigation; use `appId` only for Steam-specific actions. */
+  id: string;
+  source: GameSource;
+  name: string;
+  installDir: string;
+  libraryPath: string;
+  sizeOnDiskBytes: number;
+  lastPlayed: number | null;
+  playtimeMinutes: number | null;
+  igdbScore: number | null;
+  igdbMetadata: GameMetadataSummary | null;
+  reaction: GameReaction | null;
+  coverPath: string | null;
+  heroPath: string | null;
+  logoPath: string | null;
+  isFavorite: boolean;
+  /** Present only when `source === "steam"`. */
+  appId: number | null;
+  /** Present only when `source === "xbox"`; Windows AppUserModelId used to launch it. */
+  xboxAppId: string | null;
+  /** Present only when `source === "battlenet"`; Battle.net product code. */
+  battlenetProductCode: string | null;
+  /** Short platform label (e.g. "SNES"), present only when `source === "retro"`. */
+  platform: string | null;
+  /** Stable machine key (see `PlatformStatus.key`) for joining against the
+   * Platforms view — `platform` above is a display label, this isn't. */
+  platformKey: string | null;
+  requiresBios: boolean | null;
+  /** Name of the native emulator this game will actually launch with (e.g.
+   * "gopher64"), when one is installed and preferred over EmulatorJS for
+   * its platform. `null` means it launches through EmulatorJS. */
+  nativeEmulator: string | null;
+  /** Region label for the copy that plays by default (e.g. "USA") — `null`
+   * for Steam games. */
+  defaultRegion: string | null;
+  /** Other regional dumps of this same game the user can play instead
+   * (see `launchRetroGame`'s `variantId`) — empty for Steam games. */
+  variants: GameVariant[];
+}
+
+export interface GameVariant {
+  id: string;
+  /** Original ROM title, useful when localized names are grouped together. */
+  name: string;
+  region: string;
+}
+
+export interface GameMetadata {
+  igdbId: number;
+  igdbUrl: string | null;
+  summary: string | null;
+  firstReleaseDate: number | null;
+  developers: string[];
+  publishers: string[];
+  genres: string[];
+  platforms: string[];
+  rating: number | null;
+  ratingCount: number | null;
+  coverPath: string | null;
+  heroPath: string | null;
+  screenshotPaths: string[];
+  fetchedAt: number;
+}
+
+export interface NexusMod {
+  name: string;
+  author: string | null;
+  summary: string | null;
+  pictureUrl: string | null;
+  modPageUrl: string;
+}
+
+export interface LibrarySnapshot {
+  steamFound: boolean;
+  steamRoot: string | null;
+  xboxFound: boolean;
+  battlenetFound: boolean;
+  libraryFolders: string[];
+  games: Game[];
+}
+
+export interface Settings {
+  fullscreen: boolean;
+  launchOnStartup: boolean;
+  uiScale: number;
+  /** The Library grid's own sort/filter selections — see `LibrarySection`. */
+  librarySortMode: SortMode;
+  /** Empty means all sources; otherwise the selected source badges. */
+  librarySourceFilter: GameSource[];
+  /** Empty means all retro platforms; otherwise the selected platforms. */
+  libraryPlatformFilter: string[];
+  libraryFavoritesOnly: boolean;
+  /** Advanced filters sourced from locally cached IGDB metadata. */
+  libraryIgdbGenreFilter: string[];
+  libraryIgdbPlatformFilter: string[];
+  libraryIgdbDeveloperFilter: string[];
+  libraryIgdbPublisherFilter: string[];
+  libraryIgdbMinScore: number | null;
+  libraryIgdbYearFrom: number | null;
+  libraryIgdbYearTo: number | null;
+  libraryIgdbMetadataOnly: boolean;
+}
+
+export type SortMode = "recent" | "alphabetical" | "playtime" | "score";
+
+export interface GameMetadataSummary {
+  igdbId: number;
+  firstReleaseDate: number | null;
+  developers: string[];
+  publishers: string[];
+  genres: string[];
+  platforms: string[];
+  rating: number | null;
+  ratingCount: number | null;
+}
+
+export type OverlayPosition =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right";
+
+export interface MangoHudConfig {
+  fps: boolean;
+  frameTiming: boolean;
+  gpuStats: boolean;
+  cpuStats: boolean;
+  ram: boolean;
+  vram: boolean;
+  position: OverlayPosition;
+  fpsLimit: number;
+  toggleHud: string;
+  noDisplay: boolean;
+}
+
+export interface EnvVar {
+  key: string;
+  value: string;
+}
+
+export type Upscaler = "none" | "fsr" | "nis";
+
+export interface GamescopeConfig {
+  /** 0 means "not set" — gamescope runs at its default/native resolution. */
+  internalWidth: number;
+  internalHeight: number;
+  outputWidth: number;
+  outputHeight: number;
+  upscaler: Upscaler;
+}
+
+export interface GameSetupStatus {
+  mangohudInstalled: boolean;
+  mangohudEnabled: boolean;
+  mangohudConfig: MangoHudConfig;
+  gamemodeInstalled: boolean;
+  gamemodeEnabled: boolean;
+  gamescopeInstalled: boolean;
+  gamescopeEnabled: boolean;
+  gamescopeConfig: GamescopeConfig;
+  envVars: EnvVar[];
+  /** Whether the game's Steam Launch Options already reference our wrapper.
+   * Absent for platform-level setup (native emulator launches), which has
+   * no external app to configure — see `PlatformSetupStatus` in Rust. */
+  steamConfigured?: boolean;
+  /** The exact Launch Options value to paste into Steam's Properties dialog.
+   * Absent for platform-level setup — see `steamConfigured`. */
+  launchOptionsSnippet?: string;
+  hasCustomConfig: boolean;
+}
+
+export interface GameSetupInput {
+  mangohudEnabled: boolean;
+  mangohudConfig: MangoHudConfig;
+  gamemodeEnabled: boolean;
+  gamescopeEnabled: boolean;
+  gamescopeConfig: GamescopeConfig;
+  envVars: EnvVar[];
+}
+
+export type RetroLaunch = { mode: "native" } | { mode: "emulatorJs"; sessionId: string; url: string };
+
+export type EmulatorKind = "builtIn" | "native";
+
+export interface EmulatorOption {
+  /** `"emulatorjs"` for the built-in runtime, or a native emulator's id. */
+  id: string;
+  displayName: string;
+  kind: EmulatorKind;
+  /** "Ready" for EmulatorJS, "Installed" for a native emulator — which
+   * word to use is a `kind`-driven UI choice, this is just the raw bool. */
+  available: boolean;
+  /** Whether Wervik can download and install this option itself — drives
+   * whether to show a "Download" action instead of just "Not installed". */
+  managed: boolean;
+  /** The best default for this platform — exactly one option is ever
+   * marked `true`. Usually EmulatorJS, but not when a native emulator
+   * measurably runs the platform's games better. */
+  recommended: boolean;
+}
+
+export interface PlatformStatus {
+  key: string;
+  displayName: string;
+  /** Short label (e.g. "N64", "SNES") — used as the Platforms grid card's
+   * stable monogram. */
+  shortName: string;
+  romCount: number;
+  /** Every emulator choice for this platform — EmulatorJS first, then any
+   * native emulators Wervik knows how to launch for it. */
+  emulatorOptions: EmulatorOption[];
+  /** The user's chosen default (see `EmulatorOption.id`) — always one of
+   * `emulatorOptions`' ids, even when that option is currently
+   * unavailable (the UI shows that state rather than hiding it). */
+  selectedEmulator: string;
+  /** What will actually be used right now. Differs from `selectedEmulator`
+   * only while the selected choice is unavailable and Wervik has fallen
+   * back to EmulatorJS; `null` only if nothing at all is usable. */
+  effectiveEmulator: string | null;
+  /** Whether games on this platform need a user-supplied BIOS file. */
+  requiresBios: boolean;
+  /** Shared BIOS path configured for this platform, if any. */
+  biosPath: string | null;
+}
+
+/** Progress of the background box-art fetch (see `retro::artwork`).
+ * `total` is how many ROMs needed a cover when the current pass started;
+ * `done` is how many of those have been attempted (found or not) so far. */
+export interface ArtworkProgress {
+  done: number;
+  total: number;
+}
+
+/** Progress of the background IGDB metadata fetch. */
+export interface MetadataProgress {
+  done: number;
+  total: number;
+}

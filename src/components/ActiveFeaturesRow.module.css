@@ -1,0 +1,15 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin-bottom: 14px;
+}
+
+.dot {
+  color: var(--border);
+  font-size: 0.7rem;
+}

@@ -1,0 +1,601 @@
+//! IGDB-backed game metadata with a small local JSON cache.
+//!
+//! The lookup intentionally lives in Rust instead of the React layer. IGDB
+//! does not allow direct browser requests, and keeping the request here also
+//! means the UI can use the same path later when credentials move to the
+//! Wervik web service.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
+use ureq::Agent;
+
+use crate::commands::AppStateHandle;
+
+const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 24 * 30;
+const MAX_SCREENSHOTS: usize = 4;
+const IGDB_REQUEST_DELAY: Duration = Duration::from_millis(300);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameMetadata {
+    pub igdb_id: u64,
+    pub igdb_url: Option<String>,
+    pub summary: Option<String>,
+    pub first_release_date: Option<i64>,
+    pub developers: Vec<String>,
+    pub publishers: Vec<String>,
+    pub genres: Vec<String>,
+    pub platforms: Vec<String>,
+    pub rating: Option<f64>,
+    pub rating_count: Option<u64>,
+    pub cover_path: Option<String>,
+    pub hero_path: Option<String>,
+    pub screenshot_paths: Vec<String>,
+    pub fetched_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MetadataQuery {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Default)]
+pub struct MetadataProgressState {
+    pub done: AtomicUsize,
+    pub total: AtomicUsize,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct MetadataFile {
+    #[serde(default)]
+    entries: HashMap<String, GameMetadata>,
+    #[serde(default)]
+    misses: HashMap<String, i64>,
+}
+
+#[derive(Debug)]
+pub struct MetadataCache {
+    path: PathBuf,
+    entries: HashMap<String, GameMetadata>,
+    misses: HashMap<String, i64>,
+}
+
+impl MetadataCache {
+    pub fn load(path: &Path) -> Self {
+        let (entries, misses) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| {
+                serde_json::from_str::<MetadataFile>(&contents)
+                    .map(|file| (file.entries, file.misses))
+                    .or_else(|_| {
+                        // The first version of the cache was a bare map. Keep
+                        // those entries readable after adding miss backoff.
+                        serde_json::from_str::<HashMap<String, GameMetadata>>(&contents)
+                            .map(|entries| (entries, HashMap::new()))
+                    })
+                    .ok()
+            })
+            .unwrap_or_default();
+        Self {
+            path: path.to_path_buf(),
+            entries,
+            misses,
+        }
+    }
+
+    pub fn get(&self, game_id: &str) -> Option<GameMetadata> {
+        self.entries.get(game_id).cloned()
+    }
+
+    /// Returns the stable IGDB identity for every locally enriched game.
+    /// Callers use this to reconcile source-specific ROM ids without making
+    /// another network request.
+    pub fn igdb_ids(&self) -> HashMap<String, u64> {
+        self.entries
+            .iter()
+            .map(|(game_id, metadata)| (game_id.clone(), metadata.igdb_id))
+            .collect()
+    }
+
+    pub fn recent_miss(&self, game_id: &str) -> bool {
+        self.misses.get(game_id).is_some_and(|fetched_at| {
+            now_unix().saturating_sub(*fetched_at) < CACHE_MAX_AGE_SECONDS
+        })
+    }
+
+    pub fn put(&mut self, game_id: String, metadata: GameMetadata) -> Result<(), String> {
+        self.misses.remove(&game_id);
+        self.entries.insert(game_id, metadata);
+        self.persist()
+    }
+
+    pub fn mark_miss(&mut self, game_id: String) -> Result<(), String> {
+        self.misses.insert(game_id, now_unix());
+        self.persist()
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(&MetadataFile {
+            entries: self.entries.clone(),
+            misses: self.misses.clone(),
+        })
+        .map_err(|e| e.to_string())?;
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&self.path, json).map_err(|e| e.to_string())
+    }
+}
+
+pub fn is_fresh(metadata: &GameMetadata) -> bool {
+    let now = now_unix();
+    metadata.fetched_at > 0 && now.saturating_sub(metadata.fetched_at) < CACHE_MAX_AGE_SECONDS
+}
+
+#[derive(Debug, Deserialize)]
+struct TwitchToken {
+    access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgdbGame {
+    id: u64,
+    name: Option<String>,
+    slug: Option<String>,
+    url: Option<String>,
+    summary: Option<String>,
+    first_release_date: Option<i64>,
+    cover: Option<IgdbImage>,
+    screenshots: Option<Vec<IgdbImage>>,
+    genres: Option<Vec<IgdbNamedObject>>,
+    platforms: Option<Vec<IgdbNamedObject>>,
+    involved_companies: Option<Vec<IgdbCompany>>,
+    rating: Option<f64>,
+    rating_count: Option<u64>,
+    aggregated_rating: Option<f64>,
+    aggregated_rating_count: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgdbImage {
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgdbNamedObject {
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgdbCompany {
+    developer: Option<bool>,
+    publisher: Option<bool>,
+    company: Option<IgdbNamedObject>,
+}
+
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn credentials() -> Option<(String, String)> {
+    let client_id = std::env::var("WERVIK_IGDB_CLIENT_ID").ok()?;
+    let client_secret = std::env::var("WERVIK_IGDB_CLIENT_SECRET").ok()?;
+    if client_id.trim().is_empty() || client_secret.trim().is_empty() {
+        return None;
+    }
+    Some((client_id, client_secret))
+}
+
+/// Whether IGDB enrichment is available for this process. Retro artwork uses
+/// this to decide whether libretro-thumbnails should remain as a fallback or
+/// whether IGDB is the single primary cover source.
+pub fn is_configured() -> bool {
+    credentials().is_some()
+}
+
+fn new_agent() -> Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(12)))
+        .build()
+        .into()
+}
+
+fn twitch_token(agent: &Agent, client_id: &str, client_secret: &str) -> Result<String, String> {
+    let mut response = agent
+        .post("https://id.twitch.tv/oauth2/token")
+        .send_form([
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("grant_type", "client_credentials"),
+        ])
+        .map_err(|e| format!("IGDB authentication failed: {e}"))?;
+    response
+        .body_mut()
+        .read_json::<TwitchToken>()
+        .map(|token| token.access_token)
+        .map_err(|e| format!("Could not read the IGDB access token: {e}"))
+}
+
+fn igdb_query(name: &str) -> String {
+    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "search \"{escaped}\"; fields id,name,slug,url,summary,first_release_date,cover.url,screenshots.url,genres.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count,aggregated_rating,aggregated_rating_count; limit 8;"
+    )
+}
+
+fn search_names(name: &str) -> Vec<String> {
+    let original = name.trim();
+    let mut names = vec![original.to_string()];
+    let lower = original.to_ascii_lowercase();
+    for suffix in [
+        " - windows",
+        " – windows",
+        " — windows",
+        " (windows)",
+        " [windows]",
+    ] {
+        if lower.ends_with(suffix) {
+            let trimmed = original[..original.len() - suffix.len()].trim();
+            if !trimmed.is_empty() && trimmed != original {
+                names.push(trimmed.to_string());
+            }
+            break;
+        }
+    }
+    names
+}
+
+fn normalized(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+fn choose_result(mut results: Vec<IgdbGame>, requested_name: &str) -> Option<IgdbGame> {
+    if results.is_empty() {
+        return None;
+    }
+    let requested = normalized(requested_name);
+    results.sort_by_key(|game| {
+        let title = game.name.as_deref().map(normalized).unwrap_or_default();
+        if title == requested {
+            0
+        } else if title.starts_with(&requested) || requested.starts_with(&title) {
+            1
+        } else {
+            2
+        }
+    });
+    results.into_iter().next()
+}
+
+fn image_url(url: Option<String>, size: &str) -> Option<String> {
+    let url = url?;
+    let url = if url.starts_with("//") {
+        format!("https:{url}")
+    } else {
+        url
+    };
+    Some(url.replace("/t_thumb/", &format!("/{size}/")))
+}
+
+fn safe_cache_key(game_id: &str) -> String {
+    let key: String = game_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if key.is_empty() {
+        "game".to_string()
+    } else {
+        key
+    }
+}
+
+fn valid_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xff, 0xd8, 0xff])
+        || bytes.starts_with(&[0x89, 0x50, 0x4e, 0x47])
+        || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
+}
+
+fn download_image(agent: &Agent, url: &str, path: &Path) -> Option<String> {
+    if path.is_file() {
+        return Some(path.to_string_lossy().to_string());
+    }
+    let mut response = agent.get(url).call().ok()?;
+    let bytes = response.body_mut().read_to_vec().ok()?;
+    if !valid_image(&bytes) {
+        return None;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    std::fs::write(path, bytes).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
+
+fn names(objects: Option<Vec<IgdbNamedObject>>) -> Vec<String> {
+    objects
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|object| object.name)
+        .filter(|name| !name.trim().is_empty())
+        .collect()
+}
+
+fn should_skip(app_handle: &AppHandle, game_id: &str) -> bool {
+    app_handle
+        .try_state::<AppStateHandle>()
+        .map(|state| {
+            let state = state.lock().unwrap();
+            state
+                .metadata_cache
+                .get(game_id)
+                .is_some_and(|cached| is_fresh(&cached))
+                || state.metadata_cache.recent_miss(game_id)
+        })
+        .unwrap_or(false)
+}
+
+/// Fetches one game's metadata. Missing credentials are a normal disabled
+/// state and return `Ok(None)` so the library remains fully usable without
+/// online enrichment.
+pub fn fetch_game(
+    app_data_dir: &Path,
+    game_id: &str,
+    game_name: &str,
+) -> Result<Option<GameMetadata>, String> {
+    let Some((client_id, client_secret)) = credentials() else {
+        return Ok(None);
+    };
+
+    let agent = new_agent();
+    let access_token = twitch_token(&agent, &client_id, &client_secret)?;
+    fetch_game_with_token(
+        &agent,
+        &client_id,
+        &access_token,
+        app_data_dir,
+        game_id,
+        game_name,
+    )
+}
+
+fn fetch_game_with_token(
+    agent: &Agent,
+    client_id: &str,
+    access_token: &str,
+    app_data_dir: &Path,
+    game_id: &str,
+    game_name: &str,
+) -> Result<Option<GameMetadata>, String> {
+    let mut matched_game = None;
+    let search_names = search_names(game_name);
+    for (index, search_name) in search_names.iter().enumerate() {
+        let query = igdb_query(&search_name);
+        let mut response = agent
+            .post("https://api.igdb.com/v4/games")
+            .header("Client-ID", client_id)
+            .header("Authorization", &format!("Bearer {access_token}"))
+            .header("Accept", "application/json")
+            .send(query)
+            .map_err(|e| format!("IGDB lookup failed: {e}"))?;
+        let results = response
+            .body_mut()
+            .read_json::<Vec<IgdbGame>>()
+            .map_err(|e| format!("Could not read IGDB game data: {e}"))?;
+        if let Some(game) = choose_result(results, &search_name) {
+            matched_game = Some(game);
+            break;
+        }
+        if index + 1 < search_names.len() {
+            std::thread::sleep(IGDB_REQUEST_DELAY);
+        }
+    }
+    let Some(game) = matched_game else {
+        return Ok(None);
+    };
+
+    let artwork_dir = app_data_dir.join("igdb-artwork");
+    let key = safe_cache_key(game_id);
+    let cover_url = image_url(game.cover.and_then(|image| image.url), "t_cover_big");
+    let screenshot_urls: Vec<String> = game
+        .screenshots
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|image| image_url(image.url, "t_1080p"))
+        .collect();
+
+    let cover_path = cover_url
+        .as_deref()
+        .and_then(|url| download_image(&agent, url, &artwork_dir.join(format!("{key}-cover.jpg"))));
+    let screenshot_paths: Vec<String> = screenshot_urls
+        .iter()
+        .take(MAX_SCREENSHOTS)
+        .enumerate()
+        .filter_map(|(index, url)| {
+            download_image(
+                &agent,
+                url,
+                &artwork_dir.join(format!("{key}-screenshot-{index}.jpg")),
+            )
+        })
+        .collect();
+    let hero_path = screenshot_paths.first().cloned();
+
+    let mut developers = Vec::new();
+    let mut publishers = Vec::new();
+    for entry in game.involved_companies.unwrap_or_default() {
+        let Some(company) = entry.company.and_then(|company| company.name) else {
+            continue;
+        };
+        if entry.developer.unwrap_or(false) && !developers.contains(&company) {
+            developers.push(company.clone());
+        }
+        if entry.publisher.unwrap_or(false) && !publishers.contains(&company) {
+            publishers.push(company);
+        }
+    }
+
+    let rating = game.aggregated_rating.or(game.rating);
+    let rating_count = game.aggregated_rating_count.or(game.rating_count);
+    let igdb_url = game.url.or_else(|| {
+        game.slug
+            .map(|slug| format!("https://www.igdb.com/games/{slug}"))
+    });
+    Ok(Some(GameMetadata {
+        igdb_id: game.id,
+        igdb_url,
+        summary: game.summary,
+        first_release_date: game.first_release_date,
+        developers,
+        publishers,
+        genres: names(game.genres),
+        platforms: names(game.platforms),
+        rating,
+        rating_count,
+        cover_path,
+        hero_path,
+        screenshot_paths,
+        fetched_at: now_unix(),
+    }))
+}
+
+/// Updates every installed title in the background. Positive results and
+/// misses are persisted, while transport/API errors are left retryable for a
+/// later run. The delay keeps the worker below IGDB's public request limit and
+/// prevents a large library from making startup or the UI feel busy.
+pub fn spawn_fetch(
+    app_handle: AppHandle,
+    app_data_dir: PathBuf,
+    games: Vec<MetadataQuery>,
+    running: Arc<AtomicBool>,
+    progress: Arc<MetadataProgressState>,
+) {
+    if running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let Some((client_id, client_secret)) = credentials() else {
+            progress.done.store(0, Ordering::SeqCst);
+            progress.total.store(0, Ordering::SeqCst);
+            running.store(false, Ordering::SeqCst);
+            return;
+        };
+        let agent = new_agent();
+        let access_token = match twitch_token(&agent, &client_id, &client_secret) {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("IGDB metadata worker authentication failed: {error}");
+                running.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
+        let pending: Vec<MetadataQuery> = games
+            .into_iter()
+            .filter(|game| !should_skip(&app_handle, &game.id))
+            .collect();
+        let total = pending.len();
+        progress.done.store(0, Ordering::SeqCst);
+        progress.total.store(total, Ordering::SeqCst);
+        let _ = app_handle.emit("metadata-progress", MetadataProgress { done: 0, total });
+
+        for game in pending {
+            match fetch_game_with_token(
+                &agent,
+                &client_id,
+                &access_token,
+                &app_data_dir,
+                &game.id,
+                &game.name,
+            ) {
+                Ok(Some(metadata)) => {
+                    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+                        let mut state = state.lock().unwrap();
+                        if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
+                            eprintln!("Could not save metadata for {}: {error}", game.name);
+                        } else {
+                            state.dedupe_rom_games_by_metadata();
+                            let _ = app_handle.emit("metadata-updated", &game.id);
+                        }
+                    }
+                }
+                Ok(None) => {
+                    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+                        let mut state = state.lock().unwrap();
+                        if let Err(error) = state.metadata_cache.mark_miss(game.id.clone()) {
+                            eprintln!("Could not save metadata miss for {}: {error}", game.name);
+                        }
+                    }
+                }
+                Err(error) => eprintln!("IGDB metadata fetch failed for {}: {error}", game.name),
+            }
+            let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
+            let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
+            std::thread::sleep(IGDB_REQUEST_DELAY);
+        }
+        running.store(false, Ordering::SeqCst);
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalized_titles_ignore_punctuation_and_case() {
+        assert_eq!(
+            normalized("The Witcher 3: Wild Hunt"),
+            "thewitcher3wildhunt"
+        );
+        assert_eq!(normalized("the witcher 3 wild hunt"), "thewitcher3wildhunt");
+    }
+
+    #[test]
+    fn search_names_falls_back_from_windows_suffix() {
+        assert_eq!(
+            search_names("A Plague Tale: Requiem - Windows"),
+            vec!["A Plague Tale: Requiem - Windows", "A Plague Tale: Requiem"]
+        );
+    }
+
+    #[test]
+    fn image_urls_use_local_igdb_size_variants() {
+        assert_eq!(
+            image_url(
+                Some("//images.igdb.com/igdb/image/upload/t_thumb/co123.jpg".into()),
+                "t_cover_big"
+            ),
+            Some("https://images.igdb.com/igdb/image/upload/t_cover_big/co123.jpg".into())
+        );
+    }
+}

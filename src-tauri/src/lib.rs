@@ -1,0 +1,200 @@
+mod battlenet;
+mod commands;
+mod game_setup;
+mod mangohud;
+mod metadata;
+mod nexus;
+mod platform;
+mod playtime;
+mod retro;
+mod steam;
+mod storage;
+mod sysutil;
+mod xbox;
+
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+use tauri::Manager;
+
+use commands::AppState;
+use steam::{discovery, library};
+use storage::Store;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            let mut store = Store::load(&app_data_dir);
+            let playtime =
+                playtime::PlaytimeDb::open(&app_data_dir.join("wervik-playtime.sqlite3"))
+                    .map_err(std::io::Error::other)?;
+            let metadata_cache =
+                metadata::MetadataCache::load(&app_data_dir.join("wervik-metadata.json"));
+            let nexus_cache = nexus::NexusCache::load(&app_data_dir.join("wervik-nexus.json"));
+            let metadata_fetch_running = Arc::new(AtomicBool::new(false));
+            let metadata_progress = Arc::new(metadata::MetadataProgressState::default());
+            for (game_id, legacy) in store.legacy_retro_playtime() {
+                let _ = playtime.seed_if_missing(
+                    &game_id,
+                    legacy.total_minutes.saturating_mul(60),
+                    legacy.last_played,
+                );
+            }
+            playtime
+                .recover_interrupted_sessions()
+                .map_err(std::io::Error::other)?;
+            // Directory name is historical (predates GameMode/env var
+            // support) — kept as-is so already-pasted Launch Options
+            // snippets pointing at existing wrapper scripts keep working.
+            let game_setup_dir = app.path().app_config_dir()?.join("mangohud");
+
+            let steam_install = discovery::find_steam_install();
+            let (library_folders, games) = match &steam_install {
+                Some(install) => {
+                    let result = library::scan(&install.root);
+                    (result.library_folders, result.games)
+                }
+                None => (Vec::new(), Vec::new()),
+            };
+            let xbox_games = xbox::discovery::scan();
+            let battlenet_games = battlenet::discovery::scan();
+            let battlenet_artwork_running = Arc::new(AtomicBool::new(false));
+
+            let mut rom_games = retro::cache::load(&app_data_dir);
+            if retro::cache::repair_cached_platforms(&mut rom_games) {
+                let _ = retro::cache::save(&app_data_dir, &rom_games);
+            }
+            store.migrate_legacy_bios_paths(
+                rom_games
+                    .iter()
+                    .map(|rom| (rom.id.clone(), rom.platform.key().to_string()))
+                    .collect(),
+            );
+            // The EmulatorJS runtime is bundled as a Tauri resource (see
+            // `resources/emulatorjs-runtime` and `tauri.conf.json`) rather
+            // than app data, since it ships with Wervik itself. Still
+            // checked for `loader.js` rather than assumed present, so a
+            // packaging mistake degrades to the honest "not installed"
+            // message instead of a broken emulator.
+            let retro_runtime_dir = app
+                .path()
+                .resolve("emulatorjs-runtime", tauri::path::BaseDirectory::Resource)
+                .ok()
+                .filter(|dir| dir.join("loader.js").exists());
+
+            let app_handle = app.handle().clone();
+            let artwork_fetch_running = Arc::new(AtomicBool::new(false));
+            let artwork_progress = Arc::new(commands::ArtworkProgressState::default());
+            // Picks up box art for anything the last scan left uncovered
+            // (e.g. Wervik was closed before a previous fetch finished, or
+            // this feature is new and the ROM library predates it).
+            // When IGDB is configured it is the primary retro cover source;
+            // libretro-thumbnails remains available as the no-credentials
+            // fallback without downloading a second cover in parallel.
+            if !metadata::is_configured() {
+                commands::spawn_artwork_fetch(
+                    app_handle.clone(),
+                    app_data_dir.clone(),
+                    rom_games.clone(),
+                    artwork_fetch_running.clone(),
+                    artwork_progress.clone(),
+                );
+            }
+            battlenet::artwork::spawn_fetch(
+                app_handle.clone(),
+                app_data_dir.clone(),
+                battlenet_games.clone(),
+                battlenet_artwork_running.clone(),
+            );
+
+            let mut state = AppState {
+                steam_install,
+                library_folders,
+                games,
+                xbox_games,
+                battlenet_games,
+                battlenet_artwork_running,
+                playtime,
+                metadata_cache,
+                nexus_cache,
+                metadata_fetch_running,
+                metadata_progress,
+                store,
+                game_setup_dir,
+                app_data_dir,
+                rom_games,
+                retro_sessions: std::collections::HashMap::new(),
+                retro_runtime_dir,
+                app_handle,
+                artwork_fetch_running,
+                artwork_progress,
+            };
+            state.seed_provider_playtime();
+            state.dedupe_rom_games_by_metadata();
+            let metadata_queries = state.metadata_queries();
+            let metadata_fetch_running = state.metadata_fetch_running.clone();
+            let metadata_progress = state.metadata_progress.clone();
+            let metadata_app_handle = state.app_handle.clone();
+            let metadata_app_data_dir = state.app_data_dir.clone();
+            app.manage(Mutex::new(state));
+            metadata::spawn_fetch(
+                metadata_app_handle,
+                metadata_app_data_dir,
+                metadata_queries,
+                metadata_fetch_running,
+                metadata_progress,
+            );
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_library,
+            commands::get_game_metadata,
+            commands::get_nexus_mods,
+            commands::rescan_library,
+            commands::get_artwork_progress,
+            commands::get_metadata_progress,
+            commands::fetch_cover_now,
+            commands::launch_game,
+            commands::launch_xbox_game,
+            commands::launch_battlenet_game,
+            commands::set_favorite,
+            commands::set_game_reaction,
+            commands::get_settings,
+            commands::set_settings,
+            commands::read_image,
+            commands::open_install_folder,
+            commands::open_xbox_folder,
+            commands::open_battlenet_folder,
+            commands::open_nexus_mod,
+            commands::open_steam_page,
+            commands::get_game_setup_status,
+            commands::apply_game_setup,
+            commands::get_rom_directories,
+            commands::add_rom_directory,
+            commands::remove_rom_directory,
+            commands::rescan_retro_library,
+            commands::launch_retro_game,
+            commands::stop_retro_session,
+            commands::get_platform_status,
+            commands::set_default_emulator,
+            commands::install_native_emulator,
+            commands::open_native_emulator_settings,
+            commands::get_platform_setup_status,
+            commands::apply_platform_setup,
+            commands::open_rom_folder,
+            commands::get_bios_path,
+            commands::set_bios_path,
+            commands::clear_bios_path,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

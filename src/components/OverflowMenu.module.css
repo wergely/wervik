@@ -1,0 +1,75 @@
+.wrapper {
+  position: relative;
+}
+
+.trigger {
+  width: 46px;
+  height: 46px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease);
+}
+
+.trigger:hover,
+.trigger:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+.trigger:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 6px;
+  z-index: 5;
+  animation: menuIn 160ms var(--ease) both;
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+}
+
+.item:hover,
+.item:focus-visible {
+  background: var(--bg);
+}
+
+.item:focus-visible {
+  box-shadow: var(--shadow-focus);
+}

@@ -1,0 +1,24 @@
+.section {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 20px 0 8px;
+}
+
+.heading {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 0 0 16px;
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  width: fit-content;
+}
+
+.row {
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  scroll-padding-left: 40px;
+}

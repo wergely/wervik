@@ -1,0 +1,112 @@
+.wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.trigger {
+  min-width: 132px;
+  max-width: 190px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 0.9rem;
+  text-align: left;
+}
+
+.trigger:hover,
+.trigger[aria-expanded="true"],
+.trigger:focus-visible {
+  border-color: var(--violet);
+}
+
+.trigger:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.triggerLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 0.7;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 10;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.86rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.option:hover {
+  background: var(--bg);
+}
+
+.allOption {
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  margin-bottom: 4px;
+}
+
+.option input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--text-secondary);
+  border-radius: 4px;
+  background: transparent;
+  display: grid;
+  place-content: center;
+}
+
+.option input::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  transform: scale(0);
+  transition: transform 100ms var(--ease);
+  background: var(--cyan);
+  border-radius: 2px;
+}
+
+.option input:checked {
+  border-color: var(--cyan);
+}
+
+.option input:checked::before {
+  transform: scale(1);
+}
+
+.option input:focus-visible {
+  box-shadow: var(--shadow-focus);
+}

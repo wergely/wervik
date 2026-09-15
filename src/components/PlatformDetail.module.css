@@ -1,0 +1,316 @@
+.detail {
+  height: 100%;
+  overflow-y: auto;
+  padding: 20px 40px 40px;
+  background: var(--bg);
+}
+
+.backButton {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 9px 16px;
+  font-size: 0.9rem;
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease);
+}
+
+.backButton:hover,
+.backButton:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+.backButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 48px;
+  margin-top: 28px;
+}
+
+.main {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 560px;
+}
+
+.title {
+  font-size: 1.8rem;
+  margin: 0 0 6px;
+}
+
+.count {
+  color: var(--text-secondary);
+  margin: 0 0 24px;
+}
+
+.sectionLabel {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
+}
+
+.emulatorList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.emulatorCard {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-align: left;
+  transition:
+    border-color 140ms var(--ease),
+    background 140ms var(--ease);
+}
+
+.emulatorItem {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.emulatorCard:hover:not(:disabled) {
+  border-color: var(--violet);
+}
+
+.emulatorCard:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Focus is its own, temporary state — distinct from persistent selection,
+   so controller navigation never reads "focused" as "this is now the
+   default". */
+.emulatorCard:focus-visible {
+  box-shadow: var(--shadow-focus);
+  border-color: var(--violet);
+}
+
+/* Selection is persistent and stays visible even once focus moves
+   elsewhere — a subtle cyan tint plus a filled radio dot, never the same
+   treatment as the temporary focus ring above. */
+.emulatorCardSelected {
+  border-color: var(--cyan);
+  background: rgba(54, 217, 255, 0.06);
+}
+
+.radioDot {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 999px;
+  border: 2px solid var(--border);
+  transition: border-color 140ms var(--ease);
+}
+
+.emulatorCardSelected .radioDot {
+  border-color: var(--cyan);
+  border-width: 5px;
+}
+
+.emulatorCardBody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.emulatorCardTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.emulatorName {
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: var(--text);
+}
+
+.kindBadge {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.emulatorCardBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.status {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.statusWarning {
+  font-size: 0.85rem;
+  color: #d9a336;
+}
+
+.recommended {
+  font-size: 0.78rem;
+  color: var(--cyan);
+}
+
+.fallbackNotice {
+  font-size: 0.85rem;
+  color: #d9a336;
+  background: rgba(217, 163, 54, 0.08);
+  border: 1px solid rgba(217, 163, 54, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin: 0 0 16px;
+}
+
+.hint {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0 0 24px;
+}
+
+.downloadButton {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--cyan);
+  color: var(--cyan);
+  border-radius: var(--radius-sm);
+  padding: 7px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition:
+    background 140ms var(--ease),
+    opacity 140ms var(--ease);
+}
+
+.downloadButton:hover:not(:disabled),
+.downloadButton:focus-visible {
+  background: rgba(54, 217, 255, 0.1);
+}
+
+.downloadButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.downloadButton:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.actionError {
+  font-size: 0.85rem;
+  color: #e0665c;
+  margin: -8px 0 16px;
+}
+
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.setupButton {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+  padding: 12px 20px;
+  font-size: 0.9rem;
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease);
+}
+
+.setupButton:hover,
+.setupButton:focus-visible {
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+.setupButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.dot {
+  color: var(--cyan);
+  margin-left: 2px;
+}
+
+.summary {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.summaryRow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.summaryLabel {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.summaryValue {
+  font-size: 0.95rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (max-width: 860px) {
+  .layout {
+    flex-direction: column;
+  }
+
+  .main {
+    max-width: none;
+  }
+
+  .summary {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
