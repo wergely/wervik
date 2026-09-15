@@ -51,6 +51,7 @@ export interface GameVariant {
 }
 
 export interface GameMetadata {
+  name: string | null;
   igdbId: number;
   igdbUrl: string | null;
   summary: string | null;

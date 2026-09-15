@@ -5,9 +5,10 @@ import { EmptyState } from "./EmptyState";
 import { Header } from "./Header";
 import { LibrarySection } from "./LibrarySection";
 import { SuggestedGameCard } from "./SuggestedGameCard";
+import { suggestGames } from "../utils/recommendations";
 import styles from "./Home.module.css";
 
-const MAX_CONTINUE_PLAYING = 12;
+const MAX_CONTINUE_PLAYING = 10;
 
 interface HomeProps {
   snapshot: LibrarySnapshot;
@@ -41,6 +42,8 @@ export function Home({
     [snapshot.games],
   );
   const continuePlayingIds = useMemo(() => new Set(continuePlaying.map((g) => g.id)), [continuePlaying]);
+
+  const suggestions = useMemo(() => suggestGames(snapshot.games, continuePlayingIds), [snapshot.games, continuePlayingIds]);
 
   if (!snapshot.steamFound && !snapshot.xboxFound && !snapshot.battlenetFound && snapshot.games.length === 0) {
     return (
@@ -78,18 +81,17 @@ export function Home({
     <div className={styles.page}>
       <Header onOpenSettings={onOpenSettings} onOpenPlatforms={onOpenPlatforms} />
       <div className={styles.topRow}>
-        {continuePlaying.length > 0 && (
-          <>
-            <ContinuePlayingRow games={continuePlaying} onSelect={onSelectGame} />
-            <div className={styles.divider} />
-          </>
-        )}
-        <SuggestedGameCard
-          games={snapshot.games}
-          excludeIds={continuePlayingIds}
-          onSelect={onSelectGame}
-          onSetReaction={onSetReaction}
-        />
+        <ContinuePlayingRow games={continuePlaying} onSelect={onSelectGame} />
+        <section className={styles.suggestions} aria-label="Suggested games">
+          <h2 className={styles.heading}>Suggested</h2>
+          <div className={`${styles.suggestionRow} wervik-scroll`}>
+            {suggestions.map(({ game, reason }) => (
+              <SuggestedGameCard key={game.id} game={game} reason={reason}
+                onSelect={onSelectGame} onSetReaction={onSetReaction} />
+            ))}
+            {suggestions.length === 0 && <p>No new suggestions yet.</p>}
+          </div>
+        </section>
       </div>
       <LibrarySection
         games={snapshot.games}

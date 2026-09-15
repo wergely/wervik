@@ -24,6 +24,8 @@ const IGDB_REQUEST_DELAY: Duration = Duration::from_millis(300);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameMetadata {
+    #[serde(default)]
+    pub name: Option<String>,
     pub igdb_id: u64,
     pub igdb_url: Option<String>,
     pub summary: Option<String>,
@@ -143,7 +145,12 @@ impl MetadataCache {
 
 pub fn is_fresh(metadata: &GameMetadata) -> bool {
     let now = now_unix();
-    metadata.fetched_at > 0 && now.saturating_sub(metadata.fetched_at) < CACHE_MAX_AGE_SECONDS
+    metadata
+        .name
+        .as_deref()
+        .is_some_and(|name| !name.trim().is_empty())
+        && metadata.fetched_at > 0
+        && now.saturating_sub(metadata.fetched_at) < CACHE_MAX_AGE_SECONDS
 }
 
 #[derive(Debug, Deserialize)]
@@ -468,6 +475,7 @@ fn fetch_game_with_token(
             .map(|slug| format!("https://www.igdb.com/games/{slug}"))
     });
     Ok(Some(GameMetadata {
+        name: game.name,
         igdb_id: game.id,
         igdb_url,
         summary: game.summary,

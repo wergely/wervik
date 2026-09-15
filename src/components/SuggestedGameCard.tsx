@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useId } from "react";
 import { useArtwork } from "../hooks/useArtwork";
 import type { Game, GameReaction } from "../types";
 import { sourceLabel } from "../utils/format";
@@ -6,11 +6,8 @@ import { SourceBadge } from "./SourceBadge";
 import styles from "./SuggestedGameCard.module.css";
 
 interface SuggestedGameCardProps {
-  games: Game[];
-  /** Games to avoid suggesting when possible (e.g. what's already showing
-   * in "Continue Playing") — falls back to the full list if excluding them
-   * would leave nothing to pick from. */
-  excludeIds?: Set<string>;
+  game: Game;
+  reason: string;
   onSelect: (game: Game) => void;
   onSetReaction: (id: string, reaction: GameReaction | null) => void;
 }
@@ -20,56 +17,10 @@ function releaseYear(game: Game): string | null {
   return timestamp ? String(new Date(timestamp * 1000).getUTCFullYear()) : null;
 }
 
-function pickRandom(games: Game[], excludeIds: Set<string> | undefined, avoidId: string | null): Game | null {
-  const pool = excludeIds ? games.filter((g) => !excludeIds.has(g.id)) : games;
-  const source = pool.length > 0 ? pool : games;
-  if (source.length === 0) return null;
-  if (source.length > 1 && avoidId) {
-    const withoutLast = source.filter((g) => g.id !== avoidId);
-    if (withoutLast.length > 0) {
-      return withoutLast[Math.floor(Math.random() * withoutLast.length)];
-    }
-  }
-  return source[Math.floor(Math.random() * source.length)];
-}
-
-export function SuggestedGameCard({ games, excludeIds, onSelect, onSetReaction }: SuggestedGameCardProps) {
-  const [suggestion, setSuggestion] = useState<Game | null>(() => pickRandom(games, excludeIds, null));
-  // Metadata and artwork arrive through a refreshed library snapshot. Keep
-  // the selected id stable while replacing the object, otherwise a suggested
-  // card picked before the IGDB worker finishes would keep its old score.
-  const currentSuggestion = suggestion
-    ? games.find((game) => game.id === suggestion.id) ?? null
-    : null;
-  const displayedSuggestion = currentSuggestion ?? suggestion;
-  const { url, failed } = useArtwork(displayedSuggestion?.coverPath ?? null);
-
-  // Re-roll if the current pick falls out of the library (e.g. a ROM
-  // directory was removed) rather than pointing at a game that's gone.
-  useEffect(() => {
-    if (suggestion && !games.some((g) => g.id === suggestion.id)) {
-      setSuggestion(pickRandom(games, excludeIds, suggestion.id));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [games]);
-
-  if (!displayedSuggestion) return null;
-
+export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect, onSetReaction }: SuggestedGameCardProps) {
+  const reasonId = useId();
+  const { url, failed } = useArtwork(displayedSuggestion.coverPath);
   return (
-    <section className={styles.panel}>
-      <div className={styles.header}>
-        <span className={styles.heading}>Suggested</span>
-        <button
-          type="button"
-          className={styles.shuffleButton}
-          data-nav-item
-          onClick={() => setSuggestion((prev) => pickRandom(games, excludeIds, prev?.id ?? null))}
-          aria-label="Suggest another game"
-          title="Suggest another game"
-        >
-          🎲
-        </button>
-      </div>
       <div className={styles.cardWrap}>
         <button
           type="button"
@@ -124,7 +75,13 @@ export function SuggestedGameCard({ games, excludeIds, onSelect, onSetReaction }
             👎
           </button>
         </div>
+        <div className={styles.reasonInfo}>
+          <button type="button" className={styles.infoButton} data-nav-item
+            aria-label="Why this game is suggested" aria-describedby={reasonId}>
+            <span aria-hidden="true">ⓘ</span>
+          </button>
+          <div id={reasonId} role="tooltip" className={styles.reasonTooltip}>{reason}</div>
+        </div>
       </div>
-    </section>
   );
 }

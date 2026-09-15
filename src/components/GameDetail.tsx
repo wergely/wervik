@@ -142,7 +142,9 @@ export function GameDetail({
   useEffect(() => {
     if (!lightboxPath) return;
 
-    registerBackHandler(closeLightbox);
+    // App passes a React state setter: wrap the callback so React stores
+    // it instead of invoking it as a state updater and closing the preview.
+    registerBackHandler(() => closeLightbox);
     registerNavScope(lightboxRef.current);
     requestAnimationFrame(() => lightboxRef.current?.querySelector<HTMLElement>("[data-nav-item]")?.focus());
 

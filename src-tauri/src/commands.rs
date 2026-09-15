@@ -872,6 +872,13 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
     for game in &mut games {
         game.reaction = state.store.game_reaction(&game.id);
         if let Some(metadata) = state.metadata_cache.get(&game.id) {
+            if let Some(name) = metadata
+                .name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+            {
+                game.name = name.to_owned();
+            }
             game.igdb_score = metadata.rating;
             game.igdb_metadata = Some(metadata_summary(&metadata));
             // IGDB is authoritative for retro artwork. Other providers keep
