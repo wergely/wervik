@@ -560,28 +560,43 @@ fn fetch_game_from_wervik(
 
     let artwork_dir = app_data_dir.join("igdb-artwork");
     let key = safe_cache_key(game_id);
-    let cover_path = response.cover_url.as_deref().and_then(|url| {
-        download_image(
-            agent,
-            url,
-            &artwork_dir.join(format!("{key}-cover.jpg")),
-            Some(access_token),
-        )
-    });
-    let screenshot_paths: Vec<String> = response
+    let cover_url = response.cover_url.clone();
+    let cover_target = artwork_dir.join(format!("{key}-cover.jpg"));
+    let screenshot_targets: Vec<(String, PathBuf)> = response
         .screenshot_urls
         .iter()
         .take(MAX_SCREENSHOTS)
         .enumerate()
-        .filter_map(|(index, url)| {
-            download_image(
-                agent,
-                url,
-                &artwork_dir.join(format!("{key}-screenshot-{index}.jpg")),
-                Some(access_token),
+        .map(|(index, url)| {
+            (
+                url.clone(),
+                artwork_dir.join(format!("{key}-screenshot-{index}.jpg")),
             )
         })
         .collect();
+    let (cover_path, screenshot_paths) = std::thread::scope(|scope| {
+        let cover_handle = scope.spawn(|| {
+            let image_agent = new_agent();
+            cover_url.as_deref().and_then(|url| {
+                download_image(&image_agent, url, &cover_target, Some(access_token))
+            })
+        });
+        let screenshot_handles: Vec<_> = screenshot_targets
+            .iter()
+            .map(|(url, target)| {
+                scope.spawn(|| {
+                    let image_agent = new_agent();
+                    download_image(&image_agent, url, target, Some(access_token))
+                })
+            })
+            .collect();
+        let cover_path = cover_handle.join().unwrap();
+        let screenshot_paths = screenshot_handles
+            .into_iter()
+            .filter_map(|handle| handle.join().unwrap())
+            .collect();
+        (cover_path, screenshot_paths)
+    });
     let hero_path = screenshot_paths.first().cloned();
 
     Ok(Some(GameMetadata {
