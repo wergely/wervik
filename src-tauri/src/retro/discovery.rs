@@ -64,9 +64,8 @@ const EXTRA_EXTENSIONS: &[(&str, Platform)] = &[("bin", Platform::Genesis)];
 
 /// Picks the same entry out of a ROM zip's file listing that both
 /// `platform_for_zip` (to identify the platform) and
-/// `extract_rom_from_zip` (to actually get a real file gopher64-style
-/// native emulators can open — unlike EmulatorJS, they can't read zips
-/// themselves) care about: prefers a `.cue`/`.chd` over a `.bin`, mirroring
+/// `extract_rom_from_zip` (to actually get a real file native emulators can
+/// open) care about: prefers a `.cue`/`.chd` over a `.bin`, mirroring
 /// the "the disc sheet represents the whole game" preference `walk`
 /// applies to loose PlayStation dumps.
 fn best_zip_entry_name<R: std::io::Read + std::io::Seek>(
@@ -147,9 +146,8 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
 }
 
 /// Extracts the ROM `best_zip_entry_name` identifies out of `zip_path` into
-/// `dest_dir`, returning its path — needed only for native emulators that
-/// (unlike EmulatorJS's own in-browser decompression) can't read a zipped
-/// ROM directly. The caller is responsible for cleaning up `dest_dir` once
+/// `dest_dir`, returning its path — native emulators can't read a zipped ROM
+/// directly. The caller is responsible for cleaning up `dest_dir` once
 /// done with it (see `commands::launch_retro_game`).
 ///
 /// A `.cue` sheet (PlayStation or Neo Geo CD) references its `.bin` track
@@ -1249,9 +1247,8 @@ mod tests {
     }
 
     /// Native emulators (e.g. mupen64plus) can't read a ROM straight out of
-    /// a zip the way EmulatorJS's own in-browser decompression can — this
-    /// is what `commands::launch_retro_game` calls to get a real,
-    /// standalone file for them first.
+    /// a zip — this is what `commands::launch_retro_game` calls to get a
+    /// real, standalone file for them first.
     #[test]
     fn extracts_the_rom_out_of_a_zip_for_native_emulators() {
         let dir =

@@ -1,14 +1,7 @@
-//! Native (non-EmulatorJS) emulator launching, for platforms where a real
-//! installed emulator meaningfully outperforms the browser/WASM path:
-//! gopher64 for N64 (its native Vulkan renderer runs dramatically better
-//! than any WASM N64 core running in a browser — WASM overhead, WebGL
-//! instead of native GL/Vulkan, no real multi-threading without
-//! cross-origin-isolation headers this local server doesn't set),
-//! DuckStation for PlayStation (the modern standard PS1 emulator — better
-//! compatibility and performance than the WASM `mednafen_psx_hw` core),
-//! and RetroArch cores for N64, arcade, Neo Geo CD, and the other supported
-//! systems on Windows and macOS (the latter two have no vendored EmulatorJS
-//! core — see `Platform::default_core`).
+//! Native emulator launching, with RetroArch/Libretro as the primary path
+//! on Windows and macOS:
+//! gopher64 for N64, DuckStation for PlayStation, and RetroArch cores for
+//! the other supported systems on Windows and macOS.
 //!
 //! Wervik downloads and manages its native emulators itself (see `install`)
 //! rather than relying on the system package manager or Flatpak — the same idea
@@ -65,11 +58,9 @@ pub struct NativeEmulator {
     pub display_name: &'static str,
     launcher: Launcher,
     /// Whether this is the best default for its platform — shown as
-    /// "Recommended" in Platform Setup instead of EmulatorJS. Verified,
-    /// not assumed: gopher64, DuckStation, FBNeo, and the RetroArch cores
-    /// all provide a better native path for their supported systems than
-    /// outperform (or, for FBNeo/Neo Geo CD, simply exist where) their
-    /// WASM equivalents.
+    /// "Recommended" in Platform Setup. Verified, not assumed: gopher64,
+    /// DuckStation, FBNeo, and the RetroArch cores provide the supported
+    /// native path for their systems.
     pub recommended: bool,
     /// This emulator's real command-line argument order, with `"{rom}"`
     /// standing in for the actual ROM path — e.g. gopher64's
@@ -168,7 +159,7 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     }
 }
 
-/// Cemu — the only real option for Wii U (no libretro/EmulatorJS core comes
+/// Cemu — the only real option for Wii U (no Libretro core comes
 /// anywhere close; RetroArch's sole PS2-style attempt at other consoles
 /// doesn't extend to Wii U at all). Identical on both platforms Wervik
 /// manages it on: only the download source/archive shape differs (see
@@ -197,22 +188,15 @@ fn cemu_emulator() -> NativeEmulator {
     }
 }
 
-/// A plain "one RetroArch core, no BIOS" entry — every platform below that
-/// EmulatorJS already fully covers (see `Platform::default_core`) gets one
-/// of these as an *additional* choice, never `recommended` over it: these
-/// exist for anyone who wants native performance instead of the WASM path,
-/// not because EmulatorJS is missing anything for these systems the way it
-/// is for Arcade/Neo Geo CD. Each one intentionally downloads the exact
-/// same libretro core EmulatorJS already vendors for that platform (see
-/// `managed_release_for`) — a native build of a core already trusted here,
-/// not an unrelated one that could behave differently.
+/// A plain "one RetroArch core, no BIOS" entry for a platform. Each one
+/// downloads the managed Libretro core selected by `managed_release_for`.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn plain_retroarch_core(id: &'static str, display_name: &'static str) -> NativeEmulator {
     NativeEmulator {
         id,
         display_name,
         launcher: Launcher::Managed,
-        recommended: false,
+        recommended: true,
         launch_args: &["-L", "{core}", "{rom}"],
         settings_args: &["--menu"],
         bios_relpath: None,
@@ -238,11 +222,8 @@ fn plain_retroarch_core_with_bios(
     }
 }
 
-/// GameCube and Wii share the exact same libretro core — Dolphin's own,
+/// GameCube and Wii share the exact same Libretro core — Dolphin's own,
 /// covering both systems here just like the standalone emulator does.
-/// Unlike `plain_retroarch_core`'s entries, this is `recommended`: neither
-/// platform has any EmulatorJS fallback at all (see `Platform::default_core`),
-/// so this is the only real option rather than an alternative to one.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn dolphin_core_emulator(id: &'static str, display_name: &'static str) -> NativeEmulator {
     NativeEmulator {
@@ -280,7 +261,7 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
             id: "retroarch-playstation",
             display_name: "RetroArch · Mednafen PSX",
             launcher: Launcher::Managed,
-            recommended: false,
+            recommended: true,
             launch_args: &["-L", "{core}", "{rom}"],
             settings_args: &["--menu"],
             // Same BIOS directory convention as the other RetroArch cores
@@ -357,10 +338,9 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
                 required_system_libs: &[],
             },
         ],
-        // No EmulatorJS core exists for PS2. Windows uses standalone PCSX2,
-        // while macOS uses the official PCSX2 libretro core; both are kept
-        // as the only native option because PS2 support through the browser
-        // path is not usable enough to be an honest fallback.
+        // No Libretro core is currently used for PS2 on Windows. Windows uses
+        // standalone PCSX2, while macOS uses the official PCSX2 Libretro
+        // core.
         Platform::PlayStation2 => {
             #[cfg(target_os = "windows")]
             {
@@ -564,9 +544,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             },
         }),
         // Every plain `plain_retroarch_core` entry from `native_emulators_for`
-        // above — same core name as `Platform::default_core` for that
-        // system, verified against the real Libretro buildbot listing
-        // rather than assumed.
+        // above, using the matching core from the Libretro buildbot.
         "retroarch-nes" => Some(retroarch_core("fceumm")),
         "retroarch-snes" => Some(retroarch_core("snes9x")),
         "retroarch-gameboy" | "retroarch-gameboy-color" => Some(retroarch_core("gambatte")),
@@ -1805,9 +1783,9 @@ pub fn open_settings(app_data_dir: &Path, emulator: NativeEmulator) -> Result<Ch
 /// Composition order mirrors `game_setup::regenerate_wrapper`: gamescope
 /// outermost, then gamemode, then mangohud, then the emulator itself.
 ///
-/// Wervik doesn't embed or manage the emulator's window the way it does
-/// an EmulatorJS session, only tracks when the process exits (see
-/// `commands::launch_retro_game`) so playtime can still be recorded.
+/// Wervik doesn't embed or manage the emulator's window; it only tracks when
+/// the process exits (see `commands::launch_retro_game`) so playtime can be
+/// recorded.
 pub fn spawn(
     app_data_dir: &Path,
     emulator: NativeEmulator,
@@ -2555,8 +2533,7 @@ mod windows_tests {
 
     /// GameCube and Wii share the exact same libretro core (Dolphin's own),
     /// and — unlike Arcade/N64/Neo Geo CD's RetroArch options above — it's
-    /// each platform's *only* native option, not an alternative to an
-    /// EmulatorJS one that doesn't exist for either system.
+    /// each platform's only native option.
     #[test]
     fn gamecube_and_wii_share_the_dolphin_core() {
         let gamecube = native_emulators_for(Platform::GameCube);

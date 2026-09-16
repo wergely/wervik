@@ -111,18 +111,6 @@ pub fn run() {
                     .map(|rom| (rom.id.clone(), rom.platform.key().to_string()))
                     .collect(),
             );
-            // The EmulatorJS runtime is bundled as a Tauri resource (see
-            // `resources/emulatorjs-runtime` and `tauri.conf.json`) rather
-            // than app data, since it ships with Wervik itself. Still
-            // checked for `loader.js` rather than assumed present, so a
-            // packaging mistake degrades to the honest "not installed"
-            // message instead of a broken emulator.
-            let retro_runtime_dir = app
-                .path()
-                .resolve("emulatorjs-runtime", tauri::path::BaseDirectory::Resource)
-                .ok()
-                .filter(|dir| dir.join("loader.js").exists());
-
             let app_handle = app.handle().clone();
             let artwork_fetch_running = Arc::new(AtomicBool::new(false));
             let rom_scan_running = Arc::new(AtomicBool::new(false));
@@ -184,8 +172,6 @@ pub fn run() {
                 app_data_dir,
                 rom_games,
                 rom_scan_running,
-                retro_sessions: std::collections::HashMap::new(),
-                retro_runtime_dir,
                 app_handle,
                 artwork_fetch_running,
                 artwork_progress,
@@ -290,7 +276,6 @@ pub fn run() {
             commands::rescan_retro_library,
             commands::get_rom_scan_status,
             commands::launch_retro_game,
-            commands::stop_retro_session,
             commands::get_platform_status,
             commands::set_default_emulator,
             commands::set_graphics_preset,

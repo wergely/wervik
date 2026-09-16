@@ -32,8 +32,7 @@ fn repo_for(platform: Platform) -> Option<&'static str> {
         Platform::AtariLynx => "Atari_-_Lynx",
         Platform::AtariJaguar => "Atari_-_Jaguar",
         // libretro-thumbnails splits WonderSwan/Neo Geo Pocket into
-        // separate mono vs. Color repos, but EmulatorJS's own core
-        // grouping (and Wervik's `Platform` enum, matching it) treats each
+        // separate mono vs. Color repos, but Wervik's `Platform` enum treats each
         // pair as one system — this defaults to the mono repo, which is a
         // best-effort choice for the Color variant, not a guaranteed hit.
         Platform::WonderSwan => "Bandai_-_WonderSwan",

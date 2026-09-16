@@ -320,11 +320,11 @@ pub struct StoredState {
     #[serde(default)]
     pub platform_bios_paths: HashMap<String, String>,
     /// Platform key -> the user's explicit "Default Emulator" choice for
-    /// that platform: either `"emulatorjs"` (the built-in runtime) or a
-    /// native emulator's id (see `retro::native::NativeEmulator::id`).
+    /// that platform: a native emulator's id (see
+    /// `retro::native::NativeEmulator::id`).
     /// Absent means no explicit choice has been made yet — Wervik picks
-    /// the best available native emulator, falling back to EmulatorJS
-    /// (see `commands::selected_emulator_id`).
+    /// the best available native emulator (see
+    /// `commands::selected_emulator_id`).
     #[serde(default)]
     pub platform_default_emulator: HashMap<String, String>,
     /// Superseded by `platform_default_emulator` above (see `Store::load`'s
@@ -396,13 +396,24 @@ impl Store {
                 .or_insert(emulator_id);
             migrated = true;
         }
-        for (platform_key, prefer) in state.platform_prefer_native.drain() {
+        for (_, prefer) in state.platform_prefer_native.drain() {
             if !prefer {
-                state
-                    .platform_default_emulator
-                    .insert(platform_key, "emulatorjs".to_string());
                 migrated = true;
             }
+        }
+
+        // Remove the old built-in emulator choice. Native emulator options
+        // are selected again from the current platform catalogue instead of
+        // leaving an obsolete choice that can never launch.
+        let legacy_emulatorjs_keys: Vec<String> = state
+            .platform_default_emulator
+            .iter()
+            .filter(|(_, emulator_id)| emulator_id.as_str() == "emulatorjs")
+            .map(|(platform_key, _)| platform_key.clone())
+            .collect();
+        for platform_key in legacy_emulatorjs_keys {
+            state.platform_default_emulator.remove(&platform_key);
+            migrated = true;
         }
 
         if state.installation_id.is_empty() {
@@ -634,7 +645,7 @@ impl Store {
     }
 
     /// The user's explicit "Default Emulator" choice for this platform
-    /// (`"emulatorjs"` or a native emulator id) — `None` if they haven't
+    /// (a native emulator id) — `None` if they haven't
     /// picked one yet, in which case the caller falls back to the best
     /// available native emulator (see `commands::selected_emulator_id`).
     pub fn default_emulator(&self, platform_key: &str) -> Option<String> {
@@ -836,11 +847,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Mirrors old `resolve_native_emulator`'s check order: `prefer_native
-    /// == false` gated everything else, so it must win over any remembered
-    /// native emulator id during migration too.
+    /// The old `prefer_native == false` setting no longer maps to a browser
+    /// emulator. A remembered native id is retained, and the normal native
+    /// catalogue decides whether it can currently be used.
     #[test]
-    fn an_explicit_prefer_native_false_migrates_to_an_emulatorjs_default() {
+    fn an_explicit_prefer_native_false_does_not_create_a_browser_emulator_default() {
         let dir = scratch_dir("migrate-prefer-false");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -853,8 +864,26 @@ mod tests {
 
         assert_eq!(
             store.default_emulator("snes"),
-            Some("emulatorjs".to_string())
+            Some("some-emulator".to_string())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removes_a_legacy_browser_emulator_choice() {
+        let dir = scratch_dir("migrate-browser-emulator");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("wervik-state.json"),
+            r#"{"platformDefaultEmulator": {"snes": "emulatorjs"}}"#,
+        )
+        .unwrap();
+
+        let store = Store::load(&dir);
+
+        assert_eq!(store.default_emulator("snes"), None);
+        let saved = std::fs::read_to_string(dir.join("wervik-state.json")).unwrap();
+        assert!(!saved.contains("emulatorjs"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

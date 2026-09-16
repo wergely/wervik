@@ -12,7 +12,7 @@ interface BiosControlProps {
 /** BIOS management for platforms that need one (e.g. PlayStation, Neo Geo
  * CD). Wervik never ships or fetches a BIOS itself — the user points at
  * their own dump. The control may appear on a game detail page, but the
- * choice is stored once for the whole platform. For EmulatorJS this is
+ * choice is stored once for the whole platform. For Libretro/native emulators this is
  * copied into Wervik's own app data dir; for a native emulator that expects
  * its BIOS at a fixed path of its own (see
  * `retro::native::NativeEmulator::bios_relpath`), it's also placed there on

@@ -36,8 +36,8 @@ export interface Game {
   platformKey: string | null;
   requiresBios: boolean | null;
   /** Name of the native emulator this game will actually launch with (e.g.
-   * "gopher64"), when one is installed and preferred over EmulatorJS for
-   * its platform. `null` means it launches through EmulatorJS. */
+   * "gopher64"). `null` means the platform still needs an emulator
+   * installed. */
   nativeEmulator: string | null;
   /** Region label for the copy that plays by default (e.g. "USA") — `null`
    * for Steam games. */
@@ -315,24 +315,21 @@ export interface GameSetupInput {
   envVars: EnvVar[];
 }
 
-export type RetroLaunch = { mode: "native" } | { mode: "emulatorJs"; sessionId: string; url: string };
+export type RetroLaunch = { mode: "native" };
 
-export type EmulatorKind = "builtIn" | "native";
+export type EmulatorKind = "native";
 
 export interface EmulatorOption {
-  /** `"emulatorjs"` for the built-in runtime, or a native emulator's id. */
+  /** Stable id for a native emulator. */
   id: string;
   displayName: string;
   kind: EmulatorKind;
-  /** "Ready" for EmulatorJS, "Installed" for a native emulator — which
-   * word to use is a `kind`-driven UI choice, this is just the raw bool. */
+  /** Whether the native emulator is installed and ready to launch. */
   available: boolean;
   /** Whether Wervik can download and install this option itself — drives
    * whether to show a "Download" action instead of just "Not installed". */
   managed: boolean;
-  /** The best default for this platform — exactly one option is ever
-   * marked `true`. Usually EmulatorJS, but not when a native emulator
-   * measurably runs the platform's games better. */
+  /** The best native default for this platform. */
   recommended: boolean;
 }
 
@@ -351,16 +348,14 @@ export interface PlatformStatus {
    * stable monogram. */
   shortName: string;
   romCount: number;
-  /** Every emulator choice for this platform — EmulatorJS first, then any
-   * native emulators Wervik knows how to launch for it. */
+  /** Every native emulator Wervik knows how to launch for this platform. */
   emulatorOptions: EmulatorOption[];
   /** The user's chosen default (see `EmulatorOption.id`) — always one of
    * `emulatorOptions`' ids, even when that option is currently
    * unavailable (the UI shows that state rather than hiding it). */
   selectedEmulator: string;
-  /** What will actually be used right now. Differs from `selectedEmulator`
-   * only while the selected choice is unavailable and Wervik has fallen
-   * back to EmulatorJS; `null` only if nothing at all is usable. */
+  /** What will actually be used right now; `null` when the selected native
+   * emulator is not installed. */
   effectiveEmulator: string | null;
   /** Whether games on this platform need a user-supplied BIOS file. */
   requiresBios: boolean;

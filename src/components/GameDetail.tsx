@@ -42,7 +42,7 @@ interface GameDetailProps {
   registerNavScope: (el: HTMLElement | null) => void;
   /** Whether this exact game currently has a tracked play session running
    * (Steam/Xbox/Battle.net or a native retro emulator via a backend
-   * process monitor, or an EmulatorJS session — see `App.tsx`). */
+   * process monitor — see `App.tsx`). */
   isPlaying: boolean;
   /** The id of whichever game's play session just ended, or `null` — a
    * one-shot signal (not necessarily this game) used to force-refresh the

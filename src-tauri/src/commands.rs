@@ -22,11 +22,8 @@ use crate::platform;
 use crate::playtime::{self, PlaytimeDb, ProcessTarget};
 use crate::retro::discovery::RomGame;
 use crate::retro::platform::Platform;
-use crate::retro::server::RunningServer;
-use crate::retro::session::EmulatorSession;
 use crate::retro::{
     artwork, bios, discovery as retro_discovery, naming as retro_naming, native as retro_native,
-    server as retro_server, session as retro_session,
 };
 use crate::retroachievements::{self, GameAchievements, RaProfileSummary, RetroAchievementsCache};
 use crate::steam::achievements::{self as steam_achievements, SteamAchievementsCache};
@@ -73,16 +70,6 @@ pub struct AppState {
     /// reasoning as `artwork_fetch_running`. Also what `get_rom_scan_status`
     /// reports and `rom-scan-status` announces.
     pub rom_scan_running: Arc<AtomicBool>,
-    /// Session id -> (game id, running local server, playtime session id).
-    /// Dropping the entry
-    /// stops the server, since `RunningServer` shuts its thread down on
-    /// `Drop`.
-    pub retro_sessions: HashMap<String, (String, RunningServer, i64)>,
-    /// Where Wervik's bundled copy of the EmulatorJS runtime lives (see
-    /// `resources/emulatorjs-runtime`) — `None` only if packaging somehow
-    /// left it out, which the session page reports honestly instead of
-    /// pretending the emulator can boot.
-    pub retro_runtime_dir: Option<PathBuf>,
     pub app_handle: tauri::AppHandle,
     /// Guards against two artwork-fetch passes running at once — without
     /// it, rescanning a huge library while a previous pass is still
@@ -663,9 +650,8 @@ pub struct GameDto {
     pub platform_key: Option<String>,
     pub requires_bios: Option<bool>,
     /// Name of the native emulator this game will actually launch with
-    /// (e.g. "gopher64"), when one is installed and preferred over
-    /// EmulatorJS for its platform — surfaced so switching launch
-    /// mechanisms is never silent. `None` means it'll use EmulatorJS.
+    /// (e.g. "gopher64"). `None` means the platform still needs an
+    /// emulator installed.
     pub native_emulator: Option<String>,
     /// Region label for the copy of the ROM that plays by default (see
     /// `retro::naming::region_label`) — `None` for Steam games, which have
@@ -827,80 +813,45 @@ fn steam_owned_to_dto(game: &OwnedGame, store: &Store, playtime: &PlaytimeDb) ->
     }
 }
 
-/// Stable id for the built-in EmulatorJS runtime in the "Default Emulator"
-/// selection — sits in the same id space as a native emulator's id (see
-/// `retro_native::NativeEmulator::id`) so a platform's default is always
-/// just one string, never a separate "prefer native" flag plus a name.
-const EMULATORJS_ID: &str = "emulatorjs";
-
-/// One row in a platform's "Default Emulator" list — EmulatorJS itself,
-/// always first, plus every native emulator Wervik knows how to launch for
-/// that platform (see `retro_native::native_emulators_for`).
+/// One row in a platform's "Default Emulator" list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EmulatorKind {
-    BuiltIn,
     Native,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmulatorOption {
-    /// `EMULATORJS_ID` for the built-in runtime, or a native emulator's id.
+    /// Stable id for a native emulator.
     pub id: String,
     pub display_name: String,
     pub kind: EmulatorKind,
-    /// "Ready" (EmulatorJS, when its runtime is bundled) or "Installed"
-    /// (a native emulator actually found on the system) — the UI picks the
-    /// right word from `kind`, this is just the underlying bool.
+    /// Whether the native emulator is installed and ready to launch.
     pub available: bool,
     /// Whether Wervik can download and install this option itself (see
     /// `retro::native::install`) — drives whether the UI offers a
-    /// "Download" action instead of just "Not installed". Always `false`
-    /// for EmulatorJS (nothing to install, it ships with Wervik).
+    /// "Download" action instead of just "Not installed".
     pub managed: bool,
-    /// The best default for this platform — exactly one option per
-    /// platform is ever marked `true`. Usually EmulatorJS (the safe,
-    /// universal choice), but not when a native emulator measurably runs
-    /// the platform's games better (see `retro_native::NativeEmulator::recommended`).
+    /// The best default for this platform — exactly one option per platform
+    /// is ever marked `true` when the platform has a supported emulator.
     pub recommended: bool,
 }
 
-/// Every emulator choice `platform` offers, in a fixed order (EmulatorJS
-/// first, since it's always available whenever Wervik itself is — a
-/// consistent, obvious default — then natives in `native_emulators_for`'s
-/// preference order).
-fn emulator_options_for(
-    app_data_dir: &Path,
-    platform: Platform,
-    retro_runtime_dir: &Option<PathBuf>,
-) -> Vec<EmulatorOption> {
-    let natives = retro_native::native_emulators_for(platform);
-    let has_recommended_native = natives.iter().any(|e| e.recommended);
-
-    // EmulatorJS is never offered at all for a platform it has no
-    // vendored core for (Arcade and Neo Geo CD) — a real, unavailable-forever option
-    // would just be a broken promise, not a genuine fallback.
-    let mut options: Vec<EmulatorOption> = Vec::new();
-    if platform.default_core().is_some() {
-        options.push(EmulatorOption {
-            id: EMULATORJS_ID.to_string(),
-            display_name: "EmulatorJS".to_string(),
-            kind: EmulatorKind::BuiltIn,
-            available: retro_runtime_dir.is_some(),
-            managed: false,
-            recommended: !has_recommended_native,
-        });
-    }
-    options.extend(natives.into_iter().map(|e| EmulatorOption {
-        id: e.id.to_string(),
-        display_name: e.display_name.to_string(),
-        kind: EmulatorKind::Native,
-        available: retro_native::is_available(app_data_dir, &e),
-        managed: e.is_managed(),
-        recommended: e.recommended,
-    }));
-    options
+/// Every native emulator Wervik knows how to launch for this platform, in
+/// the fixed preference order declared by `native_emulators_for`.
+fn emulator_options_for(app_data_dir: &Path, platform: Platform) -> Vec<EmulatorOption> {
+    retro_native::native_emulators_for(platform)
+        .into_iter()
+        .map(|e| EmulatorOption {
+            id: e.id.to_string(),
+            display_name: e.display_name.to_string(),
+            kind: EmulatorKind::Native,
+            available: retro_native::is_available(app_data_dir, &e),
+            managed: e.is_managed(),
+            recommended: e.recommended,
+        })
+        .collect()
 }
 
 /// The user's explicit "Default Emulator" choice for `platform` — always
@@ -908,9 +859,8 @@ fn emulator_options_for(
 /// currently available (an unavailable selection is a real, visible state
 /// in the UI, not something silently swapped out — see
 /// `resolve_effective_native_emulator`). The first time a platform is seen
-/// with nothing chosen yet, this picks the first native option when the
-/// platform has no EmulatorJS fallback, so a newly discovered Arcade or Neo
-/// Geo CD library still exposes the correct Download action.
+/// with nothing chosen yet, this picks an installed native emulator or the
+/// recommended native option so the UI exposes the correct Download action.
 fn selected_emulator_id(app_data_dir: &Path, platform: Platform, store: &Store) -> String {
     if let Some(id) = store.default_emulator(platform.key()) {
         return id;
@@ -926,56 +876,34 @@ fn selected_emulator_id(app_data_dir: &Path, platform: Platform, store: &Store) 
         })
         .map(|e| e.id.to_string())
         .or_else(|| {
-            platform
-                .default_core()
-                .is_none()
-                .then(|| native_options)
-                .and_then(|options| options.into_iter().find(|e| e.recommended))
+            native_options
+                .into_iter()
+                .find(|e| e.recommended)
                 .map(|e| e.id.to_string())
         })
-        .unwrap_or_else(|| EMULATORJS_ID.to_string())
+        .unwrap_or_default()
 }
 
-/// What will actually run right now for `platform`: the selected emulator
-/// if it's available, else EmulatorJS as long as its runtime is bundled.
-/// `None` only in the packaging-mistake case where even that isn't
-/// available — see `EmulatorOption::available`.
-fn effective_emulator_id(
-    app_data_dir: &Path,
-    platform: Platform,
-    store: &Store,
-    retro_runtime_dir: &Option<PathBuf>,
-) -> Option<String> {
-    let options = emulator_options_for(app_data_dir, platform, retro_runtime_dir);
+/// What will actually run right now for `platform`: the selected native
+/// emulator if it is installed. `None` means the user needs to install one.
+fn effective_emulator_id(app_data_dir: &Path, platform: Platform, store: &Store) -> Option<String> {
+    let options = emulator_options_for(app_data_dir, platform);
     let selected = selected_emulator_id(app_data_dir, platform, store);
-    if let Some(option) = options.iter().find(|o| o.id == selected) {
-        if option.available {
-            return Some(option.id.clone());
-        }
-    }
     options
         .iter()
-        .find(|o| o.id == EMULATORJS_ID && o.available)
+        .find(|o| o.id == selected && o.available)
         .map(|o| o.id.clone())
 }
 
-/// The concrete native emulator to actually launch for `platform` right
-/// now, or `None` if this game should go through EmulatorJS instead —
-/// either because that's the resolved choice, or because the platform's
-/// selected native emulator isn't available and EmulatorJS is the
-/// resolved fallback (see `effective_emulator_id`). Kept as its own
-/// function (rather than inlining `effective_emulator_id` at each call
-/// site) because callers need the full `NativeEmulator` — launcher
-/// details included — not just its id.
+/// The concrete native emulator to launch for `platform`, or `None` when the
+/// selected option is not installed. Kept separate because callers need the
+/// full `NativeEmulator`, not just its id.
 fn resolve_effective_native_emulator(
     app_data_dir: &Path,
     platform: Platform,
     store: &Store,
 ) -> Option<retro_native::NativeEmulator> {
     let selected = selected_emulator_id(app_data_dir, platform, store);
-    if selected == EMULATORJS_ID {
-        return None;
-    }
     retro_native::native_emulators_for(platform)
         .into_iter()
         .find(|e| e.id == selected && retro_native::is_available(app_data_dir, e))
@@ -1887,20 +1815,11 @@ pub enum RetroLaunch {
     /// there's no session/URL for the frontend to do anything with; it
     /// just stays where it is while the emulator's own window runs.
     Native,
-    EmulatorJs {
-        session_id: String,
-        url: String,
-    },
 }
 
-/// Validates the ROM (and BIOS, if the platform needs one) still exist,
-/// then either launches a native emulator as its own process (when one is
-/// installed and preferred for this platform — see `retro::native`) or
-/// starts a local-only EmulatorJS session server and hands the frontend a
-/// URL to load in an isolated view. For the EmulatorJS path, the frontend
-/// is responsible for calling `stop_retro_session` when the player exits;
-/// for the native path, Wervik tracks the process itself and records
-/// playtime when it exits, with nothing more for the frontend to do.
+/// Validates the ROM (and BIOS, if the platform needs one), then launches
+/// the selected native emulator as its own process. Wervik tracks that
+/// process and records playtime when it exits.
 #[tauri::command(async)]
 pub fn launch_retro_game(
     state: State<AppStateHandle>,
@@ -1952,10 +1871,9 @@ pub fn launch_retro_game(
         resolve_effective_native_emulator(&state.app_data_dir, rom.platform, &state.store)
     {
         let rom_source_path = Path::new(&rom_path);
-        // Unlike EmulatorJS, native emulators (e.g. gopher64) can't read a
-        // ROM straight out of a zip themselves — extract it to a scratch
-        // dir first and clean that up once the emulator exits, same as
-        // the wrapper never leaves anything behind.
+        // Native emulators (e.g. gopher64) can't read a ROM straight out of
+        // a zip themselves — extract it to a scratch dir first and clean it
+        // up once the emulator exits.
         let is_zip = rom_source_path
             .extension()
             .and_then(|e| e.to_str())
@@ -2005,68 +1923,11 @@ pub fn launch_retro_game(
         return Ok(RetroLaunch::Native);
     }
 
-    let core = rom.platform.default_core().ok_or_else(|| {
-        format!(
-            "EmulatorJS doesn't support {} — install a native emulator for it instead.",
-            rom.platform.display_name()
-        )
-    })?;
-    let session_id = retro_session::generate_session_id();
-    let session = EmulatorSession {
-        rom_path: PathBuf::from(&rom_path),
-        core: core.to_string(),
-        bios_path,
-    };
-
-    let runtime_dir = state.retro_runtime_dir.clone();
-    let playtime_session_id = state.playtime.start_session(&id, "retro", now_unix())?;
-    let running = match retro_server::start(session, runtime_dir) {
-        Ok(running) => running,
-        Err(error) => {
-            let _ = state
-                .playtime
-                .cancel_session(playtime_session_id, now_unix());
-            return Err(error);
-        }
-    };
-    let url = running.session_url();
-    state
-        .retro_sessions
-        .insert(session_id.clone(), (id, running, playtime_session_id));
-
-    Ok(RetroLaunch::EmulatorJs { session_id, url })
-}
-
-/// Stops a play session's local server and closes its SQLite playtime session.
-/// `minutes_played` remains in the command signature for frontend/API
-/// compatibility; the persisted duration now comes from the session clock.
-#[tauri::command(async)]
-pub fn stop_retro_session(
-    state: State<AppStateHandle>,
-    session_id: String,
-    _minutes_played: u64,
-) -> Result<(), String> {
-    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    let Some((_game_id, running, playtime_session_id)) = state.retro_sessions.remove(&session_id)
-    else {
-        return Ok(());
-    };
-    drop(running);
-    let Ok(Some(finished)) = state
-        .playtime
-        .finish_session(playtime_session_id, now_unix())
-    else {
-        return Ok(());
-    };
-    if finished.duration_seconds > 0 {
-        state.store.record_retro_session(
-            &finished.game_id,
-            finished.duration_seconds.div_ceil(60),
-            finished.ended_at,
-        );
-    }
-    let _ = state.app_handle.emit("playtime-updated", &finished.game_id);
-    Ok(())
+    Err(format!(
+        "No compatible native emulator is installed for {}. Open Platforms → {} and install one first.",
+        rom.platform.display_name(),
+        rom.platform.display_name()
+    ))
 }
 
 /// Opens the folder containing a ROM in the system file manager — the
@@ -2099,17 +1960,14 @@ pub struct PlatformStatus {
     /// whichever cover a random game on that platform happens to have.
     pub short_name: String,
     pub rom_count: usize,
-    /// Every emulator choice for this platform — EmulatorJS first, then
-    /// any native emulators Wervik knows how to launch for it.
+    /// Every native emulator Wervik knows how to launch for this platform.
     pub emulator_options: Vec<EmulatorOption>,
     /// The user's chosen default (see `selected_emulator_id`) — always one
     /// of `emulator_options`' ids, even if that option is currently
     /// unavailable (the UI shows that state rather than hiding it).
     pub selected_emulator: String,
     /// What will actually be used right now (see `effective_emulator_id`).
-    /// Differs from `selected_emulator` only while the selected choice is
-    /// unavailable and Wervik has fallen back to EmulatorJS; `None` only
-    /// if nothing at all is usable.
+    /// `None` when the selected emulator is not installed yet.
     pub effective_emulator: Option<String>,
     /// Whether games on this platform need a user-supplied BIOS file.
     pub requires_bios: bool,
@@ -2140,18 +1998,9 @@ pub fn get_platform_status(state: State<AppStateHandle>) -> Vec<PlatformStatus> 
                 .iter()
                 .filter(|g| g.platform == platform)
                 .count(),
-            emulator_options: emulator_options_for(
-                &state.app_data_dir,
-                platform,
-                &state.retro_runtime_dir,
-            ),
+            emulator_options: emulator_options_for(&state.app_data_dir, platform),
             selected_emulator: selected_emulator_id(&state.app_data_dir, platform, &state.store),
-            effective_emulator: effective_emulator_id(
-                &state.app_data_dir,
-                platform,
-                &state.store,
-                &state.retro_runtime_dir,
-            ),
+            effective_emulator: effective_emulator_id(&state.app_data_dir, platform, &state.store),
             requires_bios: platform.requires_bios(),
             bios_path: state.store.bios_path(platform.key()),
             graphics_preset: retro_native::supports_graphics_preset(platform)
@@ -3100,59 +2949,55 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_with_no_native_emulators_defaults_to_emulatorjs() {
+    fn a_platform_with_no_native_emulators_has_no_default() {
         let (store, dir) = temp_store("no-native-platform");
         assert_eq!(
             selected_emulator_id(&dir, Platform::Snes, &store),
-            EMULATORJS_ID
+            ""
         );
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The native N64 emulator measurably outperforms EmulatorJS's WASM core,
-    /// so it — not EmulatorJS — should carry the "Recommended" badge.
-    /// Every other platform, with no recommended native, keeps EmulatorJS
-    /// as the recommended (safe, universal) choice.
+    /// Every native option is now part of the Libretro/native path, so the
+    /// platform's recommended choice is never a browser runtime.
     #[test]
-    fn native_n64_is_recommended_instead_of_emulatorjs() {
+    fn native_n64_is_recommended() {
         let dir = std::env::temp_dir().join(format!(
             "wervik-commands-test-recommended-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let n64_options = emulator_options_for(&dir, Platform::Nintendo64, &None);
-        let emulatorjs = n64_options.iter().find(|o| o.id == EMULATORJS_ID).unwrap();
+        let n64_options = emulator_options_for(&dir, Platform::Nintendo64);
         let native = n64_options
             .iter()
             .find(|o| o.kind == EmulatorKind::Native)
             .unwrap();
-        assert!(!emulatorjs.recommended);
         assert!(native.recommended);
 
-        let snes_options = emulator_options_for(&dir, Platform::Snes, &None);
-        assert!(
-            snes_options
-                .iter()
-                .find(|o| o.id == EMULATORJS_ID)
-                .unwrap()
-                .recommended
-        );
+        let snes_options = emulator_options_for(&dir, Platform::Snes);
+        assert!(snes_options.is_empty());
 
         let _ = std::fs::remove_dir_all(dir);
     }
 
     /// With no explicit choice made yet, the default should be the first
     /// installed native N64 emulator in Wervik's managed directory, else
-    /// EmulatorJS (mirrors `selected_emulator_id`'s own logic).
+    /// the recommended native option.
     #[test]
-    fn defaults_to_the_first_installed_native_emulator_or_emulatorjs_if_none_are() {
+    fn defaults_to_the_first_installed_native_emulator_or_recommended_if_none_are() {
         let (store, dir) = temp_store("n64-default");
         let expected = retro_native::native_emulators_for(Platform::Nintendo64)
             .into_iter()
             .find(|e| retro_native::is_available(&dir, e))
             .map(|e| e.id.to_string())
-            .unwrap_or_else(|| EMULATORJS_ID.to_string());
+            .or_else(|| {
+                retro_native::native_emulators_for(Platform::Nintendo64)
+                    .into_iter()
+                    .find(|e| e.recommended)
+                    .map(|e| e.id.to_string())
+            })
+            .unwrap_or_default();
         assert_eq!(
             selected_emulator_id(&dir, Platform::Nintendo64, &store),
             expected
@@ -3160,13 +3005,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// The core fallback-behavior guarantee: an explicit choice that is
-    /// currently unavailable must stay exactly what the user picked, while
-    /// only the *effective* (actually launched) emulator falls back. Uses
-    /// a made-up id rather than a real emulator's, so this holds regardless
-    /// of what's actually installed on whichever machine runs this test.
+    /// An explicit choice that is currently unavailable stays visible, but
+    /// there is no hidden browser fallback anymore.
     #[test]
-    fn an_explicit_but_unavailable_choice_is_preserved_while_the_effective_emulator_falls_back() {
+    fn an_explicit_but_unavailable_choice_has_no_effective_emulator() {
         let (mut store, dir) = temp_store("unavailable-choice");
         store.set_default_emulator("nintendo_64", "not-a-real-emulator");
 
@@ -3175,10 +3017,9 @@ mod tests {
             "not-a-real-emulator"
         );
 
-        let runtime_dir = Some(std::env::temp_dir());
         assert_eq!(
-            effective_emulator_id(&dir, Platform::Nintendo64, &store, &runtime_dir),
-            Some(EMULATORJS_ID.to_string())
+            effective_emulator_id(&dir, Platform::Nintendo64, &store),
+            None
         );
         assert!(resolve_effective_native_emulator(&dir, Platform::Nintendo64, &store).is_none());
 
@@ -3186,27 +3027,14 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_effective_when_even_emulatorjs_is_unavailable() {
+    fn nothing_is_effective_when_the_selected_native_emulator_is_unavailable() {
         let (mut store, dir) = temp_store("no-runtime-dir");
         store.set_default_emulator("nintendo_64", "not-a-real-emulator");
         assert_eq!(
-            effective_emulator_id(&dir, Platform::Nintendo64, &store, &None),
+            effective_emulator_id(&dir, Platform::Nintendo64, &store),
             None
         );
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    #[test]
-    fn selecting_emulatorjs_explicitly_is_respected_over_an_installed_native_emulator() {
-        let (mut store, dir) = temp_store("explicit-emulatorjs");
-        store.set_default_emulator("nintendo_64", EMULATORJS_ID);
-
-        assert_eq!(
-            selected_emulator_id(&dir, Platform::Nintendo64, &store),
-            EMULATORJS_ID
-        );
-        assert!(resolve_effective_native_emulator(&dir, Platform::Nintendo64, &store).is_none());
-
-        let _ = std::fs::remove_dir_all(dir);
-    }
 }

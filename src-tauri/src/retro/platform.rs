@@ -1,15 +1,4 @@
-//! Retro platform identification: which extensions belong to which system,
-//! and each system's default libretro core.
-//!
-//! `default_core()` is set directly as `EJS_core`, which EmulatorJS's
-//! loader treats as either a system id or a specific core name — passing
-//! the exact core name (rather than a system id like "psx") pins Wervik to
-//! the one core it actually vendors for that platform (see
-//! `resources/emulatorjs-runtime/cores`), rather than whatever EmulatorJS's
-//! own default-core-per-system ordering happens to be. Verified against
-//! the real vendored `emulator.min.js` (see
-//! `retro::server::tests::serves_the_real_vendored_runtime`), not just
-//! EmulatorJS's docs.
+//! Retro platform identification: which extensions belong to which system.
 
 use serde::{Deserialize, Serialize};
 
@@ -178,41 +167,6 @@ impl Platform {
         }
     }
 
-    /// The exact core Wervik vendors for this platform (see
-    /// `resources/emulatorjs-runtime/cores`) — verified against the real
-    /// `data/cores/cores.json` EmulatorJS ships, not guessed from docs.
-    /// `None` when EmulatorJS has no vendored core for this platform at
-    /// all (Arcade and Neo Geo CD aren't bundled) —
-    /// callers must not offer EmulatorJS as a fallback in that case (see
-    /// `commands::emulator_options_for`), since it genuinely can't play
-    /// anything for that platform.
-    pub fn default_core(self) -> Option<&'static str> {
-        Some(match self {
-            Platform::Nes => "fceumm",
-            Platform::Snes => "snes9x",
-            Platform::GameBoy | Platform::GameBoyColor => "gambatte",
-            Platform::GameBoyAdvance => "mgba",
-            Platform::MasterSystem | Platform::Genesis | Platform::GameGear => "genesis_plus_gx",
-            Platform::Sega32X => "picodrive",
-            Platform::PlayStation => "mednafen_psx_hw",
-            Platform::Nintendo64 => "mupen64plus_next",
-            Platform::Atari5200 => "a5200",
-            Platform::Atari7800 => "prosystem",
-            Platform::AtariLynx => "handy",
-            Platform::AtariJaguar => "virtualjaguar",
-            Platform::WonderSwan => "mednafen_wswan",
-            Platform::NeoGeoPocket => "mednafen_ngp",
-            Platform::PcEngine => "mednafen_pce",
-            Platform::ColecoVision => "gearcoleco",
-            Platform::Arcade
-            | Platform::NeoGeoCd
-            | Platform::PlayStation2
-            | Platform::WiiU
-            | Platform::GameCube
-            | Platform::Wii => return None,
-        })
-    }
-
     /// Whether this platform needs a user-supplied BIOS to boot at all, as
     /// opposed to systems where a BIOS is optional (e.g. just for a boot
     /// logo). Wervik never provides BIOS files itself — see `retro::bios`.
@@ -276,10 +230,10 @@ impl Platform {
     /// `cores.json`, also a valid extension for several of the platforms
     /// below) — so callers resolve it themselves using directory context
     /// (see `discovery`). Every extension here is cross-checked against
-    /// `resources/emulatorjs-runtime/cores/cores.json` rather than assumed;
-    /// where a core's real extension list includes something ambiguous
-    /// (shared with another platform, or generic like "rom"/"bin"), that
-    /// extension is left out rather than risk misidentifying a ROM.
+    /// the supported native emulator catalogue; where an emulator's real
+    /// extension list includes something ambiguous (shared with another
+    /// platform, or generic like "rom"/"bin"), that extension is left out
+    /// rather than risk misidentifying a ROM.
     pub fn from_unambiguous_extension(ext: &str) -> Option<Platform> {
         match ext.to_ascii_lowercase().as_str() {
             "nes" => Some(Platform::Nes),
@@ -411,37 +365,6 @@ mod tests {
             Platform::from_unambiguous_extension("wbfs"),
             Some(Platform::Wii)
         );
-    }
-
-    /// Every platform that claims an EmulatorJS core at all must map to
-    /// one that's actually vendored (see `resources/emulatorjs-runtime/cores`)
-    /// — this would have caught the PSX default-core mistake `platform.rs`'s
-    /// module doc mentions if it existed when that was fixed. A platform
-    /// with no vendored core (`None`) is a deliberate, checked exception,
-    /// not something this test should silently let slide — see the next
-    /// test.
-    #[test]
-    fn every_default_core_is_actually_vendored() {
-        let cores_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources/emulatorjs-runtime/cores");
-        for platform in Platform::ALL {
-            let Some(core) = platform.default_core() else {
-                continue;
-            };
-            let path = cores_dir.join(format!("{core}-wasm.data"));
-            assert!(
-                path.exists(),
-                "{platform:?}'s core {core:?} is not vendored at {path:?}"
-            );
-        }
-    }
-
-    /// Arcade and Neo Geo CD deliberately have no EmulatorJS core at all —
-    /// pinned here so a platform silently losing its core isn't mistaken for
-    /// "working as intended".
-    #[test]
-    fn neo_geo_cd_has_no_emulatorjs_core() {
-        assert_eq!(Platform::NeoGeoCd.default_core(), None);
     }
 
     #[test]

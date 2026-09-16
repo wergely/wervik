@@ -826,7 +826,7 @@ export function Settings({
                 <div>
                   <div className={styles.rowLabel}>ROM folders</div>
                   <div className={styles.rowDescription}>
-                    Wervik scans these for supported ROMs and plays them with EmulatorJS.
+                    Wervik scans these for supported ROMs and plays them with native emulators, including RetroArch/Libretro cores.
                   </div>
                 </div>
                 <button

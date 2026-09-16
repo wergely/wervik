@@ -1,18 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   installSteamGame,
   fetchCoverNow,
-  getLibrary,
   launchBattleNetGame,
   launchEaGame,
   launchRetroGame,
   launchXboxGame,
-  stopRetroSession,
 } from "./api/tauri";
 import { AchievementsView } from "./components/AchievementsView";
-import { EmulatorView } from "./components/EmulatorView";
 import { GameDetail } from "./components/GameDetail";
 import { Header, type HeaderView } from "./components/Header";
 import { Home } from "./components/Home";
@@ -26,14 +23,7 @@ import { useControllerNavigation } from "./navigation/useControllerNavigation";
 import type { Game } from "./types";
 import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
-type View = "home" | "detail" | "settings" | "emulator" | "platforms" | "platformDetail" | "achievements";
-
-interface ActiveSession {
-  game: Game;
-  sessionId: string;
-  url: string;
-  startedAt: number;
-}
+type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements";
 
 export default function App() {
   const { status, snapshot, rescanning, rescan, toggleFavorite, updateReaction, play, applySnapshot } = useLibrary();
@@ -41,9 +31,6 @@ export default function App() {
   const [view, setView] = useState<View>("home");
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [selectedPlatformKey, setSelectedPlatformKey] = useState<string | null>(null);
-  const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
-  const activeSessionRef = useRef<ActiveSession | null>(null);
-  activeSessionRef.current = activeSession;
   // Lets a nested overlay (e.g. the Game Setup drawer) intercept Escape/
   // gamepad B to close itself instead of the current view navigating back
   // to Home.
@@ -54,8 +41,8 @@ export default function App() {
   const [navScope, setNavScope] = useState<HTMLElement | null>(null);
   // The game id currently tracked as running — Steam/Xbox/Battle.net and
   // native retro emulators via a backend process monitor (see
-  // `playtime::spawn_process_monitor`), EmulatorJS via `activeSession`
-  // above. `justFinishedGameId` is a one-shot signal for "this game's
+  // `playtime::spawn_process_monitor`). `justFinishedGameId` is a one-shot
+  // signal for "this game's
   // session just ended" (see the `playtime-updated` listener below) that
   // `GameDetail` uses to refresh its achievements panel automatically.
   const [playingGameId, setPlayingGameId] = useState<string | null>(null);
@@ -78,12 +65,12 @@ export default function App() {
       .catch(() => {});
   }, [settings?.fullscreen]);
 
-  // Auto-pauses only while actually looking at or playing a specific game
-  // (its detail screen, or the emulator) — it keeps going in the
+  // Auto-pauses while actually looking at a specific game (its detail
+  // screen) — it keeps going in the
   // background across Home, Settings and Platforms, which all share the
   // same persistent top bar.
   const musicControls = useChiptunePlayer(
-    Boolean(settings?.musicEnabled) && view !== "detail" && view !== "emulator",
+    Boolean(settings?.musicEnabled) && view !== "detail",
     settings?.musicVolume ?? 0.35,
   );
 
@@ -141,44 +128,14 @@ export default function App() {
       setPlayingGameId(game.id);
       return;
     }
-    const launch = await launchRetroGame(game.id, variantId);
-    if (launch.mode === "native") {
-      // Runs as its own separate OS window (see `retro::native`) — Wervik
-      // doesn't embed it, but a backend process monitor still tracks when
-      // it exits (see `playtime::spawn_process_monitor`), same as Steam.
-      setPlayingGameId(game.id);
-      return;
-    }
+    // Runs as its own separate OS window (see `retro::native`) — Wervik
+    // doesn't embed it, but a backend process monitor still tracks when it
+    // exits (see `playtime::spawn_process_monitor`), same as Steam.
+    await launchRetroGame(game.id, variantId);
     setPlayingGameId(game.id);
-    setActiveSession({ game, sessionId: launch.sessionId, url: launch.url, startedAt: Date.now() });
-    setView("emulator");
-  }
-
-  async function handleExitEmulator() {
-    const session = activeSessionRef.current;
-    if (!session) {
-      setView("home");
-      return;
-    }
-    const minutesPlayed = Math.round((Date.now() - session.startedAt) / 60000);
-    setActiveSession(null);
-    setView("detail");
-    try {
-      await stopRetroSession(session.sessionId, minutesPlayed);
-    } finally {
-      // Playtime/last-played was just recorded on the Rust side — refresh
-      // so Continue Playing, "Recently played" sort, and this game's own
-      // detail screen reflect it immediately instead of only after the
-      // next unrelated rescan.
-      getLibrary().then(applySnapshot).catch(() => {});
-    }
   }
 
   function handleBack() {
-    if (view === "emulator") {
-      handleExitEmulator();
-      return;
-    }
     if (view === "platformDetail") {
       setView("platforms");
       return;
@@ -196,9 +153,6 @@ export default function App() {
   // Seed keyboard/controller focus whenever the visible view changes, so
   // the first arrow press or D-pad nudge has somewhere to move from.
   useEffect(() => {
-    // The emulator view wants the iframe to keep initial keyboard focus for
-    // the game itself, not the Exit button.
-    if (view === "emulator") return;
     const id = requestAnimationFrame(() => {
       if (
         document.activeElement === document.body ||
@@ -267,14 +221,6 @@ export default function App() {
           </button>
         </div>
       </div>
-    );
-  }
-
-  if (view === "emulator" && activeSession) {
-    // Rendered outside the UI-scale wrapper: the emulator should always
-    // fill the real screen 1:1, regardless of Wervik's own interface scale.
-    return (
-      <EmulatorView url={activeSession.url} gameName={activeSession.game.name} onExit={handleExitEmulator} />
     );
   }
 

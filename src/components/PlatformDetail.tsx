@@ -22,13 +22,10 @@ interface PlatformDetailProps {
  * so the UI can update instantly without waiting on a round trip. */
 function resolveEffective(options: EmulatorOption[], selectedId: string): string | null {
   const selected = options.find((o) => o.id === selectedId);
-  if (selected?.available) return selected.id;
-  const fallback = options.find((o) => o.kind === "builtIn" && o.available);
-  return fallback ? fallback.id : null;
+  return selected?.available ? selected.id : null;
 }
 
 function availabilityLabel(option: EmulatorOption): string {
-  if (option.kind === "builtIn") return option.available ? "Ready" : "Not available";
   return option.available ? "Installed" : "Not installed";
 }
 
@@ -112,7 +109,6 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
 
   const selected = platform.emulatorOptions.find((o) => o.id === platform.selectedEmulator);
   const effective = platform.emulatorOptions.find((o) => o.id === platform.effectiveEmulator);
-  const isFallenBack = !!selected && !!effective && selected.id !== effective.id;
 
   return (
     <div className={styles.detail}>
@@ -156,7 +152,7 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
                       <div className={styles.emulatorCardBody}>
                         <div className={styles.emulatorCardTop}>
                           <span className={styles.emulatorName}>{option.displayName}</span>
-                          <span className={styles.kindBadge}>{option.kind === "builtIn" ? "Built-in" : "Native"}</span>
+                          <span className={styles.kindBadge}>Native</span>
                         </div>
                         <div className={styles.emulatorCardBottom}>
                           <span className={!option.available ? styles.statusWarning : styles.status}>
@@ -219,10 +215,9 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
 
           {actionError && <p className={styles.actionError}>{actionError}</p>}
 
-          {isFallenBack && (
+          {selected && !effective && (
             <p className={styles.fallbackNotice}>
-              {selected!.displayName} is unavailable. Wervik will use {effective!.displayName} until it becomes
-              available again.
+              {selected.displayName} is not installed. Download it above before launching games on this platform.
             </p>
           )}
 

@@ -42,7 +42,7 @@ src-tauri/src/
   game_setup.rs         Per-game MangoHud/gamemode/gamescope wrapper setup
   mangohud.rs, sysutil.rs
   steam/, xbox/, battlenet/   Per-source discovery, launch, artwork
-  retro/                ROM discovery, BIOS, disc handling, EmulatorJS server, native emulator sessions
+  retro/                ROM discovery, BIOS, disc handling, native emulator sessions and Libretro cores
   platform/             Cross-source platform abstraction
 
 tests/                 Node's built-in test runner, run directly against .ts sources

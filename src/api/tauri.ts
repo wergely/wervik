@@ -239,10 +239,6 @@ export function launchRetroGame(id: string, variantId?: string | null): Promise<
   return invoke("launch_retro_game", { id, variantId: variantId ?? null });
 }
 
-export function stopRetroSession(sessionId: string, minutesPlayed: number): Promise<void> {
-  return invoke("stop_retro_session", { sessionId, minutesPlayed });
-}
-
 export function getBiosPath(platform: string): Promise<string | null> {
   return invoke("get_bios_path", { platform });
 }
@@ -263,8 +259,8 @@ export function getPlatformStatus(): Promise<PlatformStatus[]> {
   return invoke("get_platform_status");
 }
 
-/** Sets the platform's "Default Emulator" — `"emulatorjs"` or a native
- * emulator's id. Takes effect immediately, no separate apply step. */
+/** Sets the platform's "Default Emulator" — a native emulator's id. Takes
+ * effect immediately, no separate apply step. */
 export function setDefaultEmulator(platform: string, emulatorId: string): Promise<void> {
   return invoke("set_default_emulator", { platform, emulatorId });
 }

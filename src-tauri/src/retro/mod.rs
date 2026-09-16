@@ -6,5 +6,3 @@ pub mod discovery;
 pub mod naming;
 pub mod native;
 pub mod platform;
-pub mod server;
-pub mod session;
