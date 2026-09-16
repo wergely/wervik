@@ -18,6 +18,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
+#[cfg(desktop)]
+use tauri_plugin_deep_link::DeepLinkExt;
 
 use commands::AppState;
 use steam::{discovery, library};
@@ -28,11 +30,22 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .setup(|app| {
+            #[cfg(desktop)]
+            {
+                let app_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        commands::finish_wervik_connect(app_handle.clone(), url);
+                    }
+                });
+            }
+
             let app_data_dir = app.path().app_data_dir()?;
             let mut store = Store::load(&app_data_dir);
             let playtime =
@@ -178,6 +191,12 @@ pub fn run() {
             let metadata_app_data_dir = state.app_data_dir.clone();
             let metadata_settings = state.store.settings();
             app.manage(Mutex::new(state));
+            #[cfg(desktop)]
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                for url in urls {
+                    commands::finish_wervik_connect(app.handle().clone(), url);
+                }
+            }
             // Start this after the state is managed: the worker checks the
             // current account/configuration before each request and needs to
             // be able to see the managed state immediately.
@@ -230,6 +249,9 @@ pub fn run() {
             commands::set_game_reaction,
             commands::get_settings,
             commands::set_settings,
+            commands::get_wervik_account,
+            commands::connect_wervik_account,
+            commands::disconnect_wervik_account,
             commands::read_image,
             commands::open_install_folder,
             commands::open_xbox_folder,

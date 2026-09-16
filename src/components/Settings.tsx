@@ -12,6 +12,7 @@ import {
   setRomDirectoryPlatform,
 } from "../api/tauri";
 import { useMetadataProgress } from "../hooks/useMetadataProgress";
+import { useWervikAccount } from "../hooks/useWervikAccount";
 import type { LibrarySnapshot, PlatformStatus, RomDirectoryConfig, Settings as SettingsType } from "../types";
 import { IS_MACOS } from "../utils/platform";
 import { Spinner } from "./Spinner";
@@ -30,6 +31,7 @@ interface SettingsProps {
 const SCALE_STEPS = [0.9, 1, 1.1, 1.25];
 
 type Category =
+  | "account"
   | "steam"
   | "battlenet"
   | "ea"
@@ -41,6 +43,7 @@ type Category =
   | "audio";
 
 const CATEGORIES: { id: Category; label: string }[] = [
+  { id: "account", label: "Wervik Account" },
   { id: "steam", label: "Steam" },
   { id: "battlenet", label: "Battle.net" },
   { id: "ea", label: "EA App" },
@@ -185,6 +188,37 @@ function IgdbFields({
           </button>
         </div>
       )}
+    </>
+  );
+}
+
+function WervikAccountFields() {
+  const { account, connecting, error, connect, disconnect } = useWervikAccount();
+
+  return (
+    <>
+      <p className={styles.groupDescription}>
+        Connect this Wervik installation to your Wergely account. Your local library stays on this computer for now.
+      </p>
+      <div className={styles.row}>
+        <div>
+          <div className={styles.rowLabel}>{account ? account.name : "Not connected"}</div>
+          <div className={styles.rowDescription}>
+            {account ? account.email : "Sign in in your browser to connect this installation."}
+          </div>
+          {error && <div className={styles.statusMessageError}>{error}</div>}
+        </div>
+        {account ? (
+          <button type="button" className={styles.rescanButton} data-nav-item onClick={disconnect}>
+            Disconnect
+          </button>
+        ) : (
+          <button type="button" className={styles.rescanButton} data-nav-item onClick={connect} disabled={connecting}>
+            {connecting && <Spinner />}
+            {connecting ? "Waiting for login…" : "Connect"}
+          </button>
+        )}
+      </div>
     </>
   );
 }
@@ -624,6 +658,13 @@ export function Settings({
         </nav>
 
         <div className={styles.content}>
+          {category === "account" && (
+            <div className={styles.group}>
+              <p className={styles.groupTitle}>Wervik Account</p>
+              <WervikAccountFields />
+            </div>
+          )}
+
           {category === "steam" && (
             <div className={styles.group}>
               <p className={styles.groupTitle}>Steam</p>

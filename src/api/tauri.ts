@@ -16,6 +16,7 @@ import type {
   RomDirectoryConfig,
   Settings,
   SteamGameAchievements,
+  WervikAccount,
 } from "../types";
 
 export function getLibrary(): Promise<LibrarySnapshot> {
@@ -169,6 +170,18 @@ export function getSettings(): Promise<Settings> {
 
 export function setSettings(settings: Settings): Promise<void> {
   return invoke("set_settings", { settings });
+}
+
+export function getWervikAccount(): Promise<WervikAccount | null> {
+  return invoke("get_wervik_account");
+}
+
+export function connectWervikAccount(): Promise<void> {
+  return invoke("connect_wervik_account");
+}
+
+export function disconnectWervikAccount(): Promise<void> {
+  return invoke("disconnect_wervik_account");
 }
 
 export function readImage(path: string): Promise<string> {

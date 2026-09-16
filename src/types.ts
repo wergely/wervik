@@ -226,6 +226,13 @@ export interface Settings {
   steamId64Override: string;
 }
 
+export interface WervikAccount {
+  name: string;
+  email: string;
+  connectedAt: number;
+  installationId: string;
+}
+
 export type SortMode = "recent" | "alphabetical" | "playtime" | "score" | "completion";
 
 export interface GameMetadataSummary {

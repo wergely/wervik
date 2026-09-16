@@ -10,6 +10,24 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WervikAccount {
+    pub name: String,
+    pub email: String,
+    pub connected_at: i64,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingWervikConnect {
+    pub state: String,
+    pub code_verifier: String,
+    pub installation_id: String,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default)]
     pub fullscreen: bool,
@@ -238,6 +256,14 @@ pub struct RetroPlaytime {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredState {
+    /// Stable opaque identifier for this local Wervik installation. It is
+    /// created once and sent only as part of the desktop account handoff.
+    #[serde(default)]
+    pub installation_id: String,
+    #[serde(default)]
+    pub wervik_account: Option<WervikAccount>,
+    #[serde(default)]
+    pub pending_wervik_connect: Option<PendingWervikConnect>,
     /// Keyed by the unified game id (Steam app ids as strings, or a local
     /// ROM's stable id) — favorites apply across both kinds of game.
     #[serde(default)]
@@ -325,6 +351,11 @@ impl Store {
             }
         }
 
+        if state.installation_id.is_empty() {
+            state.installation_id = format!("{:032x}", rand::random::<u128>());
+            migrated = true;
+        }
+
         let store = Self { path, state };
         if migrated {
             store.persist();
@@ -378,6 +409,40 @@ impl Store {
 
     pub fn set_settings(&mut self, settings: Settings) {
         self.state.settings = settings;
+        self.persist();
+    }
+
+    pub fn installation_id(&self) -> String {
+        self.state.installation_id.clone()
+    }
+
+    pub fn wervik_account(&self) -> Option<WervikAccount> {
+        self.state.wervik_account.clone()
+    }
+
+    pub fn set_wervik_account(&mut self, account: WervikAccount) {
+        self.state.wervik_account = Some(account);
+        self.state.pending_wervik_connect = None;
+        self.persist();
+    }
+
+    pub fn clear_wervik_account(&mut self) {
+        self.state.wervik_account = None;
+        self.state.pending_wervik_connect = None;
+        self.persist();
+    }
+
+    pub fn pending_wervik_connect(&self) -> Option<PendingWervikConnect> {
+        self.state.pending_wervik_connect.clone()
+    }
+
+    pub fn set_pending_wervik_connect(&mut self, pending: PendingWervikConnect) {
+        self.state.pending_wervik_connect = Some(pending);
+        self.persist();
+    }
+
+    pub fn clear_pending_wervik_connect(&mut self) {
+        self.state.pending_wervik_connect = None;
         self.persist();
     }
 

@@ -5,10 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::State;
 
 use tauri::{Emitter, Manager};
+use url::Url;
 
 use crate::battlenet::discovery::BattleNetGame;
 use crate::ea::discovery::EaGame;
@@ -33,7 +35,7 @@ use crate::steam::launch;
 use crate::steam::launch_options;
 use crate::steam::library::{self, Game};
 use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
-use crate::storage::{RomDirectoryConfig, Settings, Store};
+use crate::storage::{PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount};
 use crate::xbox::discovery::XboxGame;
 
 pub struct AppState {
@@ -2464,6 +2466,190 @@ pub fn set_game_reaction(
         }
     }
     state.lock().unwrap_or_else(|e| e.into_inner()).store.set_game_reaction(&id, reaction);
+    Ok(())
+}
+
+const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
+const WERVIK_ACCOUNT_UPDATED_EVENT: &str = "wervik-account-updated";
+const WERVIK_ACCOUNT_ERROR_EVENT: &str = "wervik-account-error";
+const WERVIK_CONNECT_DURATION_S: i64 = 5 * 60;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopConnectExchangeRequest {
+    code: String,
+    state: String,
+    code_verifier: String,
+    installation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopConnectExchangeResponse {
+    authenticated: bool,
+    name: String,
+    email: String,
+    installation_id: String,
+}
+
+fn random_connect_value() -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn web_connect_url(installation_id: &str, state: &str, code_challenge: &str) -> Result<String, String> {
+    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/connect/desktop/start");
+    url.query_pairs_mut()
+        .append_pair("state", state)
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("installation_id", installation_id);
+    Ok(url.to_string())
+}
+
+fn exchange_desktop_connect(
+    code: String,
+    state: String,
+    pending: PendingWervikConnect,
+) -> Result<WervikAccount, String> {
+    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/connect/desktop/exchange");
+
+    let request = DesktopConnectExchangeRequest {
+        code,
+        state,
+        code_verifier: pending.code_verifier,
+        installation_id: pending.installation_id,
+    };
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Duration::from_secs(15))
+        .build()
+        .into();
+    let mut response = agent
+        .post(url.as_str())
+        .send_json(&request)
+        .map_err(|error| format!("Could not connect to Wervik Account: {error}"))?;
+    let response = response
+        .body_mut()
+        .read_json::<DesktopConnectExchangeResponse>()
+        .map_err(|error| format!("Could not read Wervik Account response: {error}"))?;
+
+    if !response.authenticated {
+        return Err("Wervik Account authentication was not completed".into());
+    }
+
+    Ok(WervikAccount {
+        name: response.name,
+        email: response.email,
+        connected_at: now_unix(),
+        installation_id: response.installation_id,
+    })
+}
+
+pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
+    if url.scheme() != "wervik" || url.host_str() != Some("auth") || url.path() != "/callback" {
+        return;
+    }
+
+    let callback_state = url.query_pairs().find_map(|(key, value)| {
+        (key == "state").then(|| value.into_owned())
+    });
+    let error = url.query_pairs().find_map(|(key, value)| {
+        (key == "error").then(|| value.into_owned())
+    });
+    let code = url.query_pairs().find_map(|(key, value)| {
+        (key == "code").then(|| value.into_owned())
+    });
+
+    let Some(state_handle) = app.try_state::<AppStateHandle>() else {
+        return;
+    };
+    let pending = {
+        let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = state.store.pending_wervik_connect();
+        let valid = pending.as_ref().is_some_and(|pending| {
+            Some(pending.state.as_str()) == callback_state.as_deref()
+                && pending.expires_at > now_unix()
+        });
+        if !valid {
+            state.store.clear_pending_wervik_connect();
+            let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, "The Wervik Account connection expired or is invalid.");
+            return;
+        }
+        pending.expect("validated pending Wervik connection")
+    };
+
+    if let Some(error) = error {
+        let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        state.store.clear_pending_wervik_connect();
+        let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, error);
+        return;
+    }
+
+    let Some(code) = code else {
+        let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        state.store.clear_pending_wervik_connect();
+        let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, "The Wervik Account callback did not include a code.");
+        return;
+    };
+
+    std::thread::spawn(move || {
+        let result = exchange_desktop_connect(code, callback_state.unwrap_or_default(), pending);
+        let Some(state_handle) = app.try_state::<AppStateHandle>() else {
+            return;
+        };
+        let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(account) => {
+                state.store.set_wervik_account(account.clone());
+                let _ = app.emit(WERVIK_ACCOUNT_UPDATED_EVENT, account);
+            }
+            Err(error) => {
+                state.store.clear_pending_wervik_connect();
+                let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, error);
+            }
+        }
+    });
+}
+
+#[tauri::command(async)]
+pub fn get_wervik_account(state: State<AppStateHandle>) -> Option<WervikAccount> {
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.wervik_account()
+}
+
+#[tauri::command(async)]
+pub fn connect_wervik_account(app: tauri::AppHandle, state: State<AppStateHandle>) -> Result<(), String> {
+    let url = {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let connect_state = random_connect_value();
+        let code_verifier = random_connect_value();
+        let installation_id = state.store.installation_id();
+        let pending = PendingWervikConnect {
+            state: connect_state.clone(),
+            code_verifier: code_verifier.clone(),
+            installation_id: installation_id.clone(),
+            expires_at: now_unix() + WERVIK_CONNECT_DURATION_S,
+        };
+        let url = web_connect_url(&installation_id, &connect_state, &pkce_challenge(&code_verifier))?;
+        state.store.set_pending_wervik_connect(pending.clone());
+        url
+    };
+
+    if let Err(error) = platform::open_url(&app, &url) {
+        state.lock().unwrap_or_else(|e| e.into_inner()).store.clear_pending_wervik_connect();
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn disconnect_wervik_account(state: State<AppStateHandle>) -> Result<(), String> {
+    state.lock().unwrap_or_else(|e| e.into_inner()).store.clear_wervik_account();
     Ok(())
 }
 
