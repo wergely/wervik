@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+fn default_wervik_redirect_scheme() -> String {
+    "wervik".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WervikAccount {
@@ -26,6 +30,7 @@ pub struct WervikAccount {
 pub struct PendingWervikConnect {
     pub state: String,
     pub code_verifier: String,
+    #[serde(default = "default_wervik_redirect_scheme")]
     pub redirect_scheme: String,
     pub installation_id: String,
     pub expires_at: i64,
@@ -328,10 +333,38 @@ pub struct Store {
 impl Store {
     pub fn load(app_data_dir: &Path) -> Self {
         let path = app_data_dir.join("wervik-state.json");
-        let mut state: StoredState = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let mut state: StoredState = match std::fs::read_to_string(&path) {
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(state) => state,
+                Err(error) => {
+                    // Keep the unreadable file available for recovery. Falling
+                    // back silently to defaults can otherwise overwrite all
+                    // local settings and favorites on the next migration.
+                    let backup_path = path.with_file_name("wervik-state.json.invalid");
+                    if !backup_path.exists() {
+                        match std::fs::copy(&path, &backup_path) {
+                            Ok(_) => eprintln!(
+                                "Could not parse Wervik state; preserved the original at {}: {error}",
+                                backup_path.display()
+                            ),
+                            Err(copy_error) => eprintln!(
+                                "Could not parse Wervik state at {} ({error}); also failed to preserve it at {} ({copy_error})",
+                                path.display(),
+                                backup_path.display()
+                            ),
+                        }
+                    } else {
+                        eprintln!(
+                            "Could not parse Wervik state at {}; using defaults while preserving {}: {error}",
+                            path.display(),
+                            backup_path.display()
+                        );
+                    }
+                    StoredState::default()
+                }
+            },
+            Err(_) => StoredState::default(),
+        };
 
         // One-time migration from the old two-field "prefer native, and
         // which one" model to a single explicit per-platform "Default
@@ -615,6 +648,43 @@ mod tests {
         let dir = scratch_dir("fresh");
         let store = Store::load(&dir);
         assert_eq!(store.default_emulator("nintendo_64"), None);
+    }
+
+    #[test]
+    fn reads_a_pending_connection_saved_before_redirect_scheme_was_added() {
+        let dir = scratch_dir("pending-connect-compatibility");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("wervik-state.json"),
+            r#"{"installationId":"installation","pendingWervikConnect":{"state":"state","codeVerifier":"verifier","installationId":"installation","expiresAt":1}}"#,
+        )
+        .unwrap();
+
+        let store = Store::load(&dir);
+
+        assert_eq!(
+            store.pending_wervik_connect().unwrap().redirect_scheme,
+            "wervik"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preserves_an_unreadable_state_before_falling_back_to_defaults() {
+        let dir = scratch_dir("invalid-state");
+        std::fs::create_dir_all(&dir).unwrap();
+        let state_path = dir.join("wervik-state.json");
+        let backup_path = dir.join("wervik-state.json.invalid");
+        std::fs::write(&state_path, "not json").unwrap();
+
+        let _ = Store::load(&dir);
+
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), "not json");
+        assert!(serde_json::from_str::<StoredState>(
+            &std::fs::read_to_string(&state_path).unwrap()
+        )
+        .is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
