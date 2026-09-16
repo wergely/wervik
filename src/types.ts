@@ -231,6 +231,8 @@ export interface WervikAccount {
   email: string;
   connectedAt: number;
   installationId: string;
+  /** Opaque credential used by the desktop client to sync account settings. */
+  accessToken: string;
 }
 
 export type SortMode = "recent" | "alphabetical" | "playtime" | "score" | "completion";

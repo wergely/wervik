@@ -2473,6 +2473,7 @@ const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
 const WERVIK_REDIRECT_SCHEME: &str = if cfg!(debug_assertions) { "wervik-dev" } else { "wervik" };
 const WERVIK_ACCOUNT_UPDATED_EVENT: &str = "wervik-account-updated";
 const WERVIK_ACCOUNT_ERROR_EVENT: &str = "wervik-account-error";
+const WERVIK_SETTINGS_SYNC_ERROR_EVENT: &str = "wervik-settings-sync-error";
 const WERVIK_CONNECT_DURATION_S: i64 = 5 * 60;
 
 #[derive(Debug, Serialize)]
@@ -2491,6 +2492,13 @@ struct DesktopConnectExchangeResponse {
     name: String,
     email: String,
     installation_id: String,
+    access_token: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikSettingsRequest<'a> {
+    settings: &'a Settings,
 }
 
 fn random_connect_value() -> String {
@@ -2555,7 +2563,30 @@ fn exchange_desktop_connect(
         email: response.email,
         connected_at: now_unix(),
         installation_id: response.installation_id,
+        access_token: response.access_token,
     })
+}
+
+fn sync_wervik_settings(account: &WervikAccount, settings: &Settings) -> Result<(), String> {
+    if account.access_token.is_empty() {
+        return Ok(());
+    }
+
+    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/settings");
+
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .build()
+        .into();
+    agent
+        .put(url.as_str())
+        .header("Authorization", &format!("Bearer {}", account.access_token))
+        .send_json(WervikSettingsRequest { settings })
+        .map_err(|error| format!("Could not sync Wervik Account settings: {error}"))?;
+
+    Ok(())
 }
 
 pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
@@ -2617,7 +2648,12 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(account) => {
+                let settings = state.store.settings();
                 state.store.set_wervik_account(account.clone());
+                drop(state);
+                if let Err(error) = sync_wervik_settings(&account, &settings) {
+                    let _ = app.emit(WERVIK_SETTINGS_SYNC_ERROR_EVENT, error);
+                }
                 let _ = app.emit(WERVIK_ACCOUNT_UPDATED_EVENT, account);
             }
             Err(error) => {
@@ -2700,7 +2736,8 @@ pub fn set_settings(
         previous.ra_username != settings.ra_username || previous.ra_api_key != settings.ra_api_key;
     let steam_credentials_changed = previous.steam_api_key != settings.steam_api_key
         || previous.steam_id64_override != settings.steam_id64_override;
-    state.store.set_settings(settings);
+    let account = state.store.wervik_account();
+    state.store.set_settings(settings.clone());
     // Lets IGDB enrichment (metadata + retro cover art) start immediately
     // after the user pastes credentials into Settings, rather than only on
     // the next rescan or app restart.
@@ -2716,6 +2753,17 @@ pub fn set_settings(
         state.start_steam_owned_fetch();
         state.start_steam_achievements_fetch();
     }
+    drop(state);
+
+    if let Some(account) = account {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = sync_wervik_settings(&account, &settings) {
+                let _ = app_handle.emit(WERVIK_SETTINGS_SYNC_ERROR_EVENT, error);
+            }
+        });
+    }
+
     Ok(())
 }
 

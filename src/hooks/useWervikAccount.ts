@@ -26,10 +26,14 @@ export function useWervikAccount() {
       setConnecting(false);
       setError(event.payload);
     });
+    const settingsFailed = listen<string>("wervik-settings-sync-error", (event) => {
+      setError(event.payload);
+    });
 
     return () => {
       updated.then((unlisten) => unlisten());
       failed.then((unlisten) => unlisten());
+      settingsFailed.then((unlisten) => unlisten());
     };
   }, []);
 

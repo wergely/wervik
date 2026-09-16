@@ -15,6 +15,10 @@ pub struct WervikAccount {
     pub email: String,
     pub connected_at: i64,
     pub installation_id: String,
+    /// Opaque bearer credential issued during desktop account handoff. Older
+    /// local accounts may not have one and must reconnect before syncing.
+    #[serde(default)]
+    pub access_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
