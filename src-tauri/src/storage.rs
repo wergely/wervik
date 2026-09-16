@@ -406,7 +406,21 @@ impl Store {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(json) = serde_json::to_string_pretty(&self.state) {
-            let _ = std::fs::write(&self.path, json);
+            if self.path.exists() {
+                let backup_path = self.path.with_file_name("wervik-state.json.bak");
+                if let Err(error) = std::fs::copy(&self.path, &backup_path) {
+                    eprintln!(
+                        "Could not back up Wervik state to {} ({error}); refusing to overwrite {}",
+                        backup_path.display(),
+                        self.path.display()
+                    );
+                    return;
+                }
+            }
+
+            if let Err(error) = std::fs::write(&self.path, json) {
+                eprintln!("Could not persist Wervik state at {}: {error}", self.path.display());
+            }
         }
     }
 
@@ -684,6 +698,24 @@ mod tests {
             &std::fs::read_to_string(&state_path).unwrap()
         )
         .is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backs_up_the_previous_state_before_persisting_changes() {
+        let dir = scratch_dir("state-backup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut store = Store::load(&dir);
+        let state_path = dir.join("wervik-state.json");
+        let backup_path = dir.join("wervik-state.json.bak");
+        let previous_state = std::fs::read_to_string(&state_path).unwrap();
+
+        let mut settings = store.settings();
+        settings.music_enabled = !settings.music_enabled;
+        store.set_settings(settings);
+
+        assert_eq!(std::fs::read_to_string(&backup_path).unwrap(), previous_state);
+        assert_ne!(std::fs::read_to_string(&state_path).unwrap(), previous_state);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
