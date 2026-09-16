@@ -2527,7 +2527,7 @@ fn exchange_desktop_connect(
         installation_id: pending.installation_id,
     };
     let agent = ureq::Agent::config_builder()
-        .timeout_global(Duration::from_secs(15))
+        .timeout_global(Some(Duration::from_secs(15)))
         .build()
         .into();
     let mut response = agent
