@@ -591,7 +591,7 @@ fn fetch_game_from_wervik(
             })
             .collect();
         let cover_path = cover_handle.join().unwrap();
-        let screenshot_paths = screenshot_handles
+        let screenshot_paths: Vec<String> = screenshot_handles
             .into_iter()
             .filter_map(|handle| handle.join().unwrap())
             .collect();
