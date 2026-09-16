@@ -2526,7 +2526,7 @@ fn exchange_desktop_connect(
         code_verifier: pending.code_verifier,
         installation_id: pending.installation_id,
     };
-    let agent = ureq::Agent::config_builder()
+    let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .build()
         .into();
