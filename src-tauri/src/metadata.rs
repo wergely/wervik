@@ -17,10 +17,12 @@ use ureq::Agent;
 
 use crate::commands::AppStateHandle;
 use crate::retro::platform::Platform;
+use crate::storage::MetadataProvider;
 
 const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 24 * 30;
 const MAX_SCREENSHOTS: usize = 4;
 const IGDB_REQUEST_DELAY: Duration = Duration::from_millis(300);
+const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -225,6 +227,39 @@ struct IgdbCompany {
     company: Option<IgdbNamedObject>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikMetadataRequest<'a> {
+    game_name: &'a str,
+    platform_key: Option<&'a str>,
+    force: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikMetadataResponse {
+    metadata: Option<WervikGameMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikGameMetadata {
+    name: Option<String>,
+    igdb_id: u64,
+    igdb_url: Option<String>,
+    summary: Option<String>,
+    first_release_date: Option<i64>,
+    developers: Vec<String>,
+    publishers: Vec<String>,
+    genres: Vec<String>,
+    platforms: Vec<String>,
+    rating: Option<f64>,
+    rating_count: Option<u64>,
+    cover_url: Option<String>,
+    hero_url: Option<String>,
+    screenshot_urls: Vec<String>,
+}
+
 fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -399,11 +434,15 @@ fn valid_image(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
 }
 
-fn download_image(agent: &Agent, url: &str, path: &Path) -> Option<String> {
+fn download_image(agent: &Agent, url: &str, path: &Path, bearer_token: Option<&str>) -> Option<String> {
     if path.is_file() {
         return Some(path.to_string_lossy().to_string());
     }
-    let mut response = agent.get(url).call().ok()?;
+    let mut request = agent.get(url);
+    if let Some(token) = bearer_token {
+        request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    let mut response = request.call().ok()?;
     let bytes = response.body_mut().read_to_vec().ok()?;
     if !valid_image(&bytes) {
         return None;
@@ -446,25 +485,122 @@ pub fn fetch_game(
     game_id: &str,
     game_name: &str,
     platform: Option<Platform>,
+    provider: MetadataProvider,
     stored_client_id: &str,
     stored_client_secret: &str,
+    wervik_access_token: Option<&str>,
+    force: bool,
 ) -> Result<Option<GameMetadata>, String> {
-    let Some((client_id, client_secret)) = credentials(stored_client_id, stored_client_secret)
-    else {
+    let agent = new_agent();
+    match provider {
+        MetadataProvider::Igdb => {
+            let Some((client_id, client_secret)) = credentials(stored_client_id, stored_client_secret)
+            else {
+                return Ok(None);
+            };
+            let access_token = twitch_token(&agent, &client_id, &client_secret)?;
+            fetch_game_with_token(
+                &agent,
+                &client_id,
+                &access_token,
+                app_data_dir,
+                game_id,
+                game_name,
+                platform,
+            )
+        }
+        MetadataProvider::Wervik => {
+            let Some(access_token) = wervik_access_token.filter(|token| !token.trim().is_empty()) else {
+                return Ok(None);
+            };
+            fetch_game_from_wervik(
+                &agent,
+                access_token,
+                app_data_dir,
+                game_id,
+                game_name,
+                platform,
+                force,
+            )
+        }
+    }
+}
+
+fn fetch_game_from_wervik(
+    agent: &Agent,
+    access_token: &str,
+    app_data_dir: &Path,
+    game_id: &str,
+    game_name: &str,
+    platform: Option<Platform>,
+    force: bool,
+) -> Result<Option<GameMetadata>, String> {
+    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = url::Url::parse(&configured_base)
+        .map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/metadata/igdb");
+
+    let request = WervikMetadataRequest {
+        game_name,
+        platform_key: platform.map(Platform::key),
+        force,
+    };
+    let mut response = agent
+        .post(url.as_str())
+        .header("Authorization", &format!("Bearer {access_token}"))
+        .send_json(&request)
+        .map_err(|error| format!("Wervik metadata lookup failed: {error}"))?;
+    let response = response
+        .body_mut()
+        .read_json::<WervikMetadataResponse>()
+        .map_err(|error| format!("Could not read Wervik metadata response: {error}"))?;
+    let Some(response) = response.metadata else {
         return Ok(None);
     };
 
-    let agent = new_agent();
-    let access_token = twitch_token(&agent, &client_id, &client_secret)?;
-    fetch_game_with_token(
-        &agent,
-        &client_id,
-        &access_token,
-        app_data_dir,
-        game_id,
-        game_name,
-        platform,
-    )
+    let artwork_dir = app_data_dir.join("igdb-artwork");
+    let key = safe_cache_key(game_id);
+    let cover_path = response.cover_url.as_deref().and_then(|url| {
+        download_image(
+            agent,
+            url,
+            &artwork_dir.join(format!("{key}-cover.jpg")),
+            Some(access_token),
+        )
+    });
+    let screenshot_paths: Vec<String> = response
+        .screenshot_urls
+        .iter()
+        .take(MAX_SCREENSHOTS)
+        .enumerate()
+        .filter_map(|(index, url)| {
+            download_image(
+                agent,
+                url,
+                &artwork_dir.join(format!("{key}-screenshot-{index}.jpg")),
+                Some(access_token),
+            )
+        })
+        .collect();
+    let hero_path = screenshot_paths.first().cloned();
+
+    Ok(Some(GameMetadata {
+        name: response.name,
+        igdb_id: response.igdb_id,
+        igdb_url: response.igdb_url,
+        summary: response.summary,
+        first_release_date: response.first_release_date,
+        developers: response.developers,
+        publishers: response.publishers,
+        genres: response.genres,
+        platforms: response.platforms,
+        rating: response.rating,
+        rating_count: response.rating_count,
+        cover_path,
+        hero_path,
+        screenshot_paths,
+        fetched_at: now_unix(),
+    }))
 }
 
 fn fetch_game_with_token(
@@ -515,7 +651,7 @@ fn fetch_game_with_token(
 
     let cover_path = cover_url
         .as_deref()
-        .and_then(|url| download_image(&agent, url, &artwork_dir.join(format!("{key}-cover.jpg"))));
+        .and_then(|url| download_image(&agent, url, &artwork_dir.join(format!("{key}-cover.jpg")), None));
     let screenshot_paths: Vec<String> = screenshot_urls
         .iter()
         .take(MAX_SCREENSHOTS)
@@ -525,6 +661,7 @@ fn fetch_game_with_token(
                 &agent,
                 url,
                 &artwork_dir.join(format!("{key}-screenshot-{index}.jpg")),
+                None,
             )
         })
         .collect();
@@ -612,8 +749,11 @@ pub fn spawn_fetch(
     games: Vec<MetadataQuery>,
     running: Arc<AtomicBool>,
     progress: Arc<MetadataProgressState>,
+    provider: MetadataProvider,
     stored_client_id: String,
     stored_client_secret: String,
+    wervik_access_token: Option<String>,
+    force: bool,
 ) {
     if running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -623,20 +763,32 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
-        let Some((client_id, client_secret)) = credentials(&stored_client_id, &stored_client_secret) else {
+        let igdb_credentials = match provider {
+            MetadataProvider::Igdb => credentials(&stored_client_id, &stored_client_secret),
+            MetadataProvider::Wervik => None,
+        };
+        if (provider == MetadataProvider::Igdb && igdb_credentials.is_none())
+            || (provider == MetadataProvider::Wervik
+                && wervik_access_token
+                    .as_deref()
+                    .map_or(true, |token| token.trim().is_empty()))
+        {
             progress.done.store(0, Ordering::SeqCst);
             progress.total.store(0, Ordering::SeqCst);
             running.store(false, Ordering::SeqCst);
             return;
-        };
+        }
         let agent = new_agent();
-        let access_token = match twitch_token(&agent, &client_id, &client_secret) {
-            Ok(token) => token,
-            Err(error) => {
-                eprintln!("IGDB metadata worker authentication failed: {error}");
-                running.store(false, Ordering::SeqCst);
-                return;
-            }
+        let access_token = match igdb_credentials.as_ref() {
+            Some((client_id, client_secret)) => match twitch_token(&agent, client_id, client_secret) {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    eprintln!("IGDB metadata worker authentication failed: {error}");
+                    running.store(false, Ordering::SeqCst);
+                    return;
+                }
+            },
+            None => None,
         };
 
         let pending: Vec<MetadataQuery> = games
@@ -649,15 +801,30 @@ pub fn spawn_fetch(
         let _ = app_handle.emit("metadata-progress", MetadataProgress { done: 0, total });
 
         for game in pending {
-            match fetch_game_with_token(
-                &agent,
-                &client_id,
-                &access_token,
-                &app_data_dir,
-                &game.id,
-                &game.name,
-                game.platform,
-            ) {
+            let result = match provider {
+                MetadataProvider::Igdb => {
+                    let (client_id, _) = igdb_credentials.as_ref().expect("validated IGDB credentials");
+                    fetch_game_with_token(
+                        &agent,
+                        client_id,
+                        access_token.as_deref().expect("validated IGDB access token"),
+                        &app_data_dir,
+                        &game.id,
+                        &game.name,
+                        game.platform,
+                    )
+                }
+                MetadataProvider::Wervik => fetch_game_from_wervik(
+                    &agent,
+                    wervik_access_token.as_deref().expect("validated Wervik access token"),
+                    &app_data_dir,
+                    &game.id,
+                    &game.name,
+                    game.platform,
+                    force,
+                ),
+            };
+            match result {
                 Ok(Some(metadata)) => {
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());

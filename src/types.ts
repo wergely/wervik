@@ -183,6 +183,7 @@ export interface Settings {
   fullscreen: boolean;
   launchOnStartup: boolean;
   uiScale: number;
+  metadataProvider: MetadataProvider;
   /** The Library grid's own sort/filter selections — see `LibrarySection`. */
   librarySortMode: SortMode;
   /** Empty means all sources; otherwise the selected source badges. */
@@ -225,6 +226,8 @@ export interface Settings {
   steamApiKey: string;
   steamId64Override: string;
 }
+
+export type MetadataProvider = "igdb" | "wervik";
 
 export interface WervikAccount {
   name: string;

@@ -12,6 +12,19 @@ fn default_wervik_redirect_scheme() -> String {
     "wervik".to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MetadataProvider {
+    Igdb,
+    Wervik,
+}
+
+impl Default for MetadataProvider {
+    fn default() -> Self {
+        Self::Igdb
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WervikAccount {
@@ -45,6 +58,8 @@ pub struct Settings {
     pub launch_on_startup: bool,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    #[serde(default)]
+    pub metadata_provider: MetadataProvider,
     /// The Library grid's own sort/filter selections (see
     /// `LibrarySection` on the frontend) — persisted here, alongside the
     /// rest of Wervik's settings, so closing and reopening the app (or
@@ -183,6 +198,7 @@ impl Default for Settings {
             fullscreen: false,
             launch_on_startup: false,
             ui_scale: default_ui_scale(),
+            metadata_provider: MetadataProvider::default(),
             library_sort_mode: default_library_sort_mode(),
             library_source_filter: default_all_filters(),
             library_platform_filter: default_all_filters(),
@@ -391,6 +407,13 @@ impl Store {
 
         if state.installation_id.is_empty() {
             state.installation_id = format!("{:032x}", rand::random::<u128>());
+            migrated = true;
+        }
+
+        if state.wervik_account.is_none()
+            && state.settings.metadata_provider == MetadataProvider::Wervik
+        {
+            state.settings.metadata_provider = MetadataProvider::Igdb;
             migrated = true;
         }
 

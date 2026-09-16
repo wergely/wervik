@@ -237,6 +237,22 @@
   font-size: 0.8rem;
 }
 
+.providerSelect {
+  flex-shrink: 0;
+  width: 220px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 12px;
+  font-size: 0.85rem;
+}
+
+.providerSelect:focus-visible {
+  border-color: var(--violet);
+  box-shadow: var(--shadow-focus);
+}
+
 .romPlatformSelect:focus-visible {
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);

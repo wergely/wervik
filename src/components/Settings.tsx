@@ -37,7 +37,7 @@ type Category =
   | "ea"
   | "xbox"
   | "retro"
-  | "igdb"
+  | "metadata"
   | "retroachievements"
   | "interface"
   | "audio";
@@ -49,7 +49,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
   { id: "ea", label: "EA App" },
   { id: "xbox", label: "Xbox App & PC Game Pass" },
   { id: "retro", label: "Retro & Emulation" },
-  { id: "igdb", label: "IGDB" },
+  { id: "metadata", label: "Metadata" },
   { id: "retroachievements", label: "RetroAchievements" },
   { id: "interface", label: "Interface" },
   { id: "audio", label: "Audio" },
@@ -62,13 +62,14 @@ const CATEGORIES: { id: Category; label: string }[] = [
  * on Save — unlike every other setting here, saving on each keystroke would
  * both write to disk constantly and (see `commands::set_settings`) fire off
  * an IGDB auth attempt with a half-typed credential on every character. */
-function IgdbFields({
+function MetadataFields({
   settings,
   onUpdateSettings,
 }: {
   settings: SettingsType | null;
   onUpdateSettings: (partial: Partial<SettingsType>) => void;
 }) {
+  const { account } = useWervikAccount();
   const [clientId, setClientId] = useState(settings?.igdbClientId ?? "");
   const [clientSecret, setClientSecret] = useState(settings?.igdbClientSecret ?? "");
   const [revealSecret, setRevealSecret] = useState(false);
@@ -80,7 +81,10 @@ function IgdbFields({
 
   const dirty =
     clientId.trim() !== (settings?.igdbClientId ?? "") || clientSecret.trim() !== (settings?.igdbClientSecret ?? "");
-  const configured = !!settings?.igdbClientId && !!settings?.igdbClientSecret;
+  const configuredProvider = settings?.metadataProvider ?? "igdb";
+  const provider = configuredProvider === "wervik" && !account ? "igdb" : configuredProvider;
+  const igdbConfigured = !!settings?.igdbClientId && !!settings?.igdbClientSecret;
+  const configured = provider === "wervik" ? !!account : igdbConfigured;
 
   const metadataProgress = useMetadataProgress();
   const fetchingMetadata =
@@ -102,74 +106,106 @@ function IgdbFields({
 
   return (
     <>
-      <p className={styles.groupDescription}>
-        Optional. Enriches your library with IGDB details, ratings, screenshots and box art. Get a Client ID and
-        Secret from a{" "}
-        <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noreferrer">
-          Twitch Developer application
-        </a>{" "}
-        (IGDB uses Twitch's client-credentials flow) — the redirect URL can be <code>http://localhost</code>.
-      </p>
       <div className={styles.row}>
         <div>
-          <div className={styles.rowLabel}>Client ID</div>
+          <div className={styles.rowLabel}>Metadata provider</div>
+          <div className={styles.rowDescription}>Choose where Wervik gets game details and artwork.</div>
         </div>
-        <input
-          className={styles.textInput}
-          value={clientId}
-          onChange={(e) => setClientId(e.target.value)}
-          placeholder="Client ID"
-          spellCheck={false}
+        <select
+          className={styles.providerSelect}
+          value={provider}
+          onChange={(event) => {
+            if (event.target.value === "wervik" && !account) return;
+            onUpdateSettings({ metadataProvider: event.target.value as SettingsType["metadataProvider"] });
+          }}
           data-nav-item
-        />
+          aria-label="Metadata provider"
+        >
+          <option value="igdb">IGDB</option>
+          <option value="wervik" disabled={!account}>
+            Wervik{account ? "" : " (connect account first)"}
+          </option>
+        </select>
       </div>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Client Secret</div>
-          <div className={styles.rowDescription}>Stored locally — only ever sent to IGDB's own token endpoint.</div>
-        </div>
-        <div className={styles.secretField}>
-          <input
-            className={styles.textInput}
-            type={revealSecret ? "text" : "password"}
-            value={clientSecret}
-            onChange={(e) => setClientSecret(e.target.value)}
-            placeholder="Client Secret"
-            spellCheck={false}
-            data-nav-item
-          />
-          <button
-            type="button"
-            className={styles.revealButton}
-            data-nav-item
-            onClick={() => setRevealSecret((v) => !v)}
-            aria-label={revealSecret ? "Hide client secret" : "Show client secret"}
-            title={revealSecret ? "Hide client secret" : "Show client secret"}
-          >
-            {revealSecret ? "🙈" : "👁"}
-          </button>
-        </div>
-      </div>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Status</div>
-          <div className={styles.rowDescription}>
-            {configured
-              ? "Configured — details, ratings and artwork are fetched from IGDB."
-              : "Not configured — Wervik works fine without it, just without IGDB-sourced details and artwork."}
+
+      {provider === "wervik" ? (
+        <p className={styles.groupDescription}>
+          {account
+            ? "Wervik metadata is available through your connected account. Wervik caches shared game data and artwork so repeated lookups do not need to call IGDB again."
+            : "Connect your Wervik Account to enable this provider."}
+        </p>
+      ) : (
+        <>
+          <p className={styles.groupDescription}>
+            Optional. Enriches your library with IGDB details, ratings, screenshots and box art. Get a Client ID and
+            Secret from a{" "}
+            <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noreferrer">
+              Twitch Developer application
+            </a>{" "}
+            (IGDB uses Twitch's client-credentials flow) — the redirect URL can be <code>http://localhost</code>.
+          </p>
+          <div className={styles.row}>
+            <div>
+              <div className={styles.rowLabel}>Client ID</div>
+            </div>
+            <input
+              className={styles.textInput}
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="Client ID"
+              spellCheck={false}
+              data-nav-item
+            />
           </div>
-        </div>
-        <button type="button" className={styles.rescanButton} data-nav-item onClick={save} disabled={!dirty}>
-          Save
-        </button>
-      </div>
+          <div className={styles.row}>
+            <div>
+              <div className={styles.rowLabel}>Client Secret</div>
+              <div className={styles.rowDescription}>Stored locally — only ever sent to IGDB's own token endpoint.</div>
+            </div>
+            <div className={styles.secretField}>
+              <input
+                className={styles.textInput}
+                type={revealSecret ? "text" : "password"}
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder="Client Secret"
+                spellCheck={false}
+                data-nav-item
+              />
+              <button
+                type="button"
+                className={styles.revealButton}
+                data-nav-item
+                onClick={() => setRevealSecret((v) => !v)}
+                aria-label={revealSecret ? "Hide client secret" : "Show client secret"}
+                title={revealSecret ? "Hide client secret" : "Show client secret"}
+              >
+                {revealSecret ? "🙈" : "👁"}
+              </button>
+            </div>
+          </div>
+          <div className={styles.row}>
+            <div>
+              <div className={styles.rowLabel}>Status</div>
+              <div className={styles.rowDescription}>
+                {igdbConfigured
+                  ? "Configured — details, ratings and artwork are fetched from IGDB."
+                  : "Not configured — Wervik works fine without it, just without IGDB-sourced details and artwork."}
+              </div>
+            </div>
+            <button type="button" className={styles.rescanButton} data-nav-item onClick={save} disabled={!dirty}>
+              Save
+            </button>
+          </div>
+        </>
+      )}
       {configured && (
         <div className={styles.row}>
           <div>
             <div className={styles.rowLabel}>Refresh metadata</div>
             <div className={styles.rowDescription}>
-              Re-fetches every game from IGDB from scratch, including cover art. Use this if a game shows the wrong
-              details or artwork — a cached bad match otherwise sticks around for up to 30 days.
+              Re-fetches every game from the selected provider, including cover art. Use this if a game shows the
+              wrong details or artwork.
             </div>
           </div>
           <button
@@ -865,10 +901,10 @@ export function Settings({
             </div>
           )}
 
-          {category === "igdb" && (
+          {category === "metadata" && (
             <div className={styles.group}>
-              <p className={styles.groupTitle}>IGDB</p>
-              <IgdbFields settings={settings} onUpdateSettings={onUpdateSettings} />
+              <p className={styles.groupTitle}>Metadata</p>
+              <MetadataFields settings={settings} onUpdateSettings={onUpdateSettings} />
             </div>
           )}
 

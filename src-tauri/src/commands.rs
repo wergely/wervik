@@ -35,7 +35,9 @@ use crate::steam::launch;
 use crate::steam::launch_options;
 use crate::steam::library::{self, Game};
 use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
-use crate::storage::{PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount};
+use crate::storage::{
+    MetadataProvider, PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount,
+};
 use crate::xbox::discovery::XboxGame;
 
 pub struct AppState {
@@ -177,15 +179,27 @@ impl AppState {
     }
 
     pub(crate) fn start_metadata_fetch(&self) {
+        self.start_metadata_fetch_with_force(false);
+    }
+
+    pub(crate) fn start_metadata_fetch_with_force(&self, force: bool) {
         let settings = self.store.settings();
+        let wervik_access_token = self
+            .store
+            .wervik_account()
+            .map(|account| account.access_token)
+            .filter(|token| !token.trim().is_empty());
         metadata::spawn_fetch(
             self.app_handle.clone(),
             self.app_data_dir.clone(),
             self.metadata_queries(),
             self.metadata_fetch_running.clone(),
             self.metadata_progress.clone(),
+            settings.metadata_provider,
             settings.igdb_client_id,
             settings.igdb_client_secret,
+            wervik_access_token,
+            force,
         );
     }
 
@@ -389,12 +403,20 @@ impl AppState {
                 state.store.migrate_legacy_bios_paths(bios_migration_keys);
                 state.dedupe_rom_games_by_metadata();
                 let _ = crate::retro::cache::save(&state.app_data_dir, &state.rom_games);
-                // IGDB is the primary cover source for retro games when
-                // configured. Keep the old libretro-thumbnails pass only
-                // for installations that have no IGDB credentials, where
-                // it remains a useful fallback.
+                // The configured metadata provider is the primary cover
+                // source for retro games. Keep the old libretro-thumbnails
+                // pass only when that provider is unavailable.
                 let settings = state.store.settings();
-                if !metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret) {
+                let metadata_available = match settings.metadata_provider {
+                    MetadataProvider::Igdb => {
+                        metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret)
+                    }
+                    MetadataProvider::Wervik => state
+                        .store
+                        .wervik_account()
+                        .is_some_and(|account| !account.access_token.trim().is_empty()),
+                };
+                if !metadata_available {
                     spawn_artwork_fetch(
                         state.app_handle.clone(),
                         state.app_data_dir.clone(),
@@ -499,7 +521,7 @@ pub fn refresh_all_metadata(state: State<AppStateHandle>) -> Result<(), String> 
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.metadata_cache.clear()?;
     metadata::clear_artwork(&state.app_data_dir)?;
-    state.start_metadata_fetch();
+    state.start_metadata_fetch_with_force(true);
     Ok(())
 }
 
@@ -516,7 +538,16 @@ pub fn fetch_cover_now(state: State<AppStateHandle>, id: String) -> Option<Strin
     let (app_handle, app_data_dir, rom) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let settings = state.store.settings();
-        if metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret) {
+        let metadata_available = match settings.metadata_provider {
+            MetadataProvider::Igdb => {
+                metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret)
+            }
+            MetadataProvider::Wervik => state
+                .store
+                .wervik_account()
+                .is_some_and(|account| !account.access_token.trim().is_empty()),
+        };
+        if metadata_available {
             return None;
         }
         let rom = state.rom_games.iter().find(|r| r.id == id)?.clone();
@@ -1268,7 +1299,7 @@ pub fn get_library(state: State<AppStateHandle>) -> LibrarySnapshot {
 }
 
 /// Shared tail of `get_game_metadata` and `refresh_game_metadata`: runs the
-/// actual IGDB lookup and records either the result or a miss in the cache.
+/// selected metadata lookup and records either the result or a miss in the cache.
 /// Callers are responsible for anything that has to happen *before* the
 /// lookup (checking for an already-fresh cache hit, or clearing a stale one).
 fn fetch_and_store_metadata(
@@ -1278,14 +1309,19 @@ fn fetch_and_store_metadata(
     game_name: &str,
     platform: Option<Platform>,
     settings: &Settings,
+    wervik_access_token: Option<&str>,
+    force: bool,
 ) -> Result<Option<GameMetadata>, String> {
     let Some(metadata) = metadata::fetch_game(
         app_data_dir,
         &game_id,
         game_name,
         platform,
+        settings.metadata_provider,
         &settings.igdb_client_id,
         &settings.igdb_client_secret,
+        wervik_access_token,
+        force,
     )?
     else {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1316,13 +1352,20 @@ pub fn get_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (cached, recent_miss, app_data_dir, settings) = {
+    let (cached, recent_miss, app_data_dir, settings, wervik_access_token) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let settings = state.store.settings();
+        let wervik_access_token = state
+            .store
+            .wervik_account()
+            .map(|account| account.access_token)
+            .filter(|token| !token.trim().is_empty());
         (
             state.metadata_cache.get(&game_id),
             state.metadata_cache.recent_miss(&game_id),
             state.app_data_dir.clone(),
-            state.store.settings(),
+            settings,
+            wervik_access_token,
         )
     };
     if let Some(metadata) = cached.filter(metadata::is_fresh) {
@@ -1332,7 +1375,16 @@ pub fn get_game_metadata(
         return Ok(None);
     }
 
-    fetch_and_store_metadata(&state, &app_data_dir, game_id, &game_name, platform, &settings)
+    fetch_and_store_metadata(
+        &state,
+        &app_data_dir,
+        game_id,
+        &game_name,
+        platform,
+        &settings,
+        wervik_access_token.as_deref(),
+        false,
+    )
 }
 
 /// Forces a fresh IGDB lookup for one game, bypassing the cache entirely —
@@ -1349,14 +1401,29 @@ pub fn refresh_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (app_data_dir, settings) = {
+    let (app_data_dir, settings, wervik_access_token) = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         state.metadata_cache.remove(&game_id)?;
         metadata::clear_artwork_for(&state.app_data_dir, &game_id)?;
-        (state.app_data_dir.clone(), state.store.settings())
+        let settings = state.store.settings();
+        let wervik_access_token = state
+            .store
+            .wervik_account()
+            .map(|account| account.access_token)
+            .filter(|token| !token.trim().is_empty());
+        (state.app_data_dir.clone(), settings, wervik_access_token)
     };
 
-    fetch_and_store_metadata(&state, &app_data_dir, game_id, &game_name, platform, &settings)
+    fetch_and_store_metadata(
+        &state,
+        &app_data_dir,
+        game_id,
+        &game_name,
+        platform,
+        &settings,
+        wervik_access_token.as_deref(),
+        true,
+    )
 }
 
 /// Returns the cached Nexus Mods trending feed for the selected game, or
@@ -2650,6 +2717,7 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
             Ok(account) => {
                 let settings = state.store.settings();
                 state.store.set_wervik_account(account.clone());
+                state.start_metadata_fetch();
                 drop(state);
                 if let Err(error) = sync_wervik_settings(&account, &settings) {
                     let _ = app.emit(WERVIK_SETTINGS_SYNC_ERROR_EVENT, error);
@@ -2702,7 +2770,14 @@ pub fn connect_wervik_account(app: tauri::AppHandle, state: State<AppStateHandle
 
 #[tauri::command(async)]
 pub fn disconnect_wervik_account(state: State<AppStateHandle>) -> Result<(), String> {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.clear_wervik_account();
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = state.store.settings();
+    if settings.metadata_provider == MetadataProvider::Wervik {
+        settings.metadata_provider = MetadataProvider::Igdb;
+        state.store.set_settings(settings);
+    }
+    state.store.clear_wervik_account();
+    state.start_metadata_fetch();
     Ok(())
 }
 
@@ -2717,6 +2792,17 @@ pub fn set_settings(
     state: State<AppStateHandle>,
     settings: Settings,
 ) -> Result<(), String> {
+    if settings.metadata_provider == MetadataProvider::Wervik
+        && state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .store
+            .wervik_account()
+            .map_or(true, |account| account.access_token.trim().is_empty())
+    {
+        return Err("Connect your Wervik Account before selecting Wervik metadata.".into());
+    }
+
     #[cfg(desktop)]
     {
         use tauri_plugin_autostart::ManagerExt;
@@ -2730,6 +2816,7 @@ pub fn set_settings(
     }
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let previous = state.store.settings();
+    let metadata_provider_changed = previous.metadata_provider != settings.metadata_provider;
     let credentials_changed = previous.igdb_client_id != settings.igdb_client_id
         || previous.igdb_client_secret != settings.igdb_client_secret;
     let ra_credentials_changed =
@@ -2737,11 +2824,14 @@ pub fn set_settings(
     let steam_credentials_changed = previous.steam_api_key != settings.steam_api_key
         || previous.steam_id64_override != settings.steam_id64_override;
     let account = state.store.wervik_account();
+    if metadata_provider_changed {
+        state.metadata_cache.clear()?;
+        metadata::clear_artwork(&state.app_data_dir)?;
+    }
     state.store.set_settings(settings.clone());
-    // Lets IGDB enrichment (metadata + retro cover art) start immediately
-    // after the user pastes credentials into Settings, rather than only on
-    // the next rescan or app restart.
-    if credentials_changed {
+    // Let metadata enrichment start immediately after credentials or provider
+    // changes, rather than only on the next rescan or app restart.
+    if credentials_changed || metadata_provider_changed {
         state.start_metadata_fetch();
     }
     if ra_credentials_changed {

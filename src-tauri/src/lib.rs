@@ -23,7 +23,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 use commands::AppState;
 use steam::{discovery, library};
-use storage::Store;
+use storage::{MetadataProvider, Store};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -133,8 +133,17 @@ pub fn run() {
             // When IGDB is configured it is the primary retro cover source;
             // libretro-thumbnails remains available as the no-credentials
             // fallback without downloading a second cover in parallel.
-            let igdb_settings = store.settings();
-            if !metadata::is_configured(&igdb_settings.igdb_client_id, &igdb_settings.igdb_client_secret) {
+            let metadata_settings = store.settings();
+            let metadata_available = match metadata_settings.metadata_provider {
+                MetadataProvider::Igdb => metadata::is_configured(
+                    &metadata_settings.igdb_client_id,
+                    &metadata_settings.igdb_client_secret,
+                ),
+                MetadataProvider::Wervik => store
+                    .wervik_account()
+                    .is_some_and(|account| !account.access_token.trim().is_empty()),
+            };
+            if !metadata_available {
                 commands::spawn_artwork_fetch(
                     app_handle.clone(),
                     app_data_dir.clone(),
@@ -195,6 +204,11 @@ pub fn run() {
             let metadata_app_handle = state.app_handle.clone();
             let metadata_app_data_dir = state.app_data_dir.clone();
             let metadata_settings = state.store.settings();
+            let metadata_wervik_access_token = state
+                .store
+                .wervik_account()
+                .map(|account| account.access_token)
+                .filter(|token| !token.trim().is_empty());
             app.manage(Mutex::new(state));
             #[cfg(desktop)]
             if let Ok(Some(urls)) = app.deep_link().get_current() {
@@ -216,8 +230,11 @@ pub fn run() {
                 metadata_queries,
                 metadata_fetch_running,
                 metadata_progress,
+                metadata_settings.metadata_provider,
                 metadata_settings.igdb_client_id,
                 metadata_settings.igdb_client_secret,
+                metadata_wervik_access_token,
+                false,
             );
             retroachievements::spawn_fetch(
                 metadata_app_handle,
