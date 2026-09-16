@@ -2470,6 +2470,7 @@ pub fn set_game_reaction(
 }
 
 const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
+const WERVIK_REDIRECT_SCHEME: &str = if cfg!(debug_assertions) { "wervik-dev" } else { "wervik" };
 const WERVIK_ACCOUNT_UPDATED_EVENT: &str = "wervik-account-updated";
 const WERVIK_ACCOUNT_ERROR_EVENT: &str = "wervik-account-error";
 const WERVIK_CONNECT_DURATION_S: i64 = 5 * 60;
@@ -2500,13 +2501,19 @@ fn pkce_challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-fn web_connect_url(installation_id: &str, state: &str, code_challenge: &str) -> Result<String, String> {
+fn web_connect_url(
+    installation_id: &str,
+    state: &str,
+    code_challenge: &str,
+    redirect_scheme: &str,
+) -> Result<String, String> {
     let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
     let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
     url.set_path("/api/connect/desktop/start");
     url.query_pairs_mut()
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
+        .append_pair("redirect_scheme", redirect_scheme)
         .append_pair("installation_id", installation_id);
     Ok(url.to_string())
 }
@@ -2552,7 +2559,10 @@ fn exchange_desktop_connect(
 }
 
 pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
-    if url.scheme() != "wervik" || url.host_str() != Some("auth") || url.path() != "/callback" {
+    if !matches!(url.scheme(), "wervik" | "wervik-dev")
+        || url.host_str() != Some("auth")
+        || url.path() != "/callback"
+    {
         return;
     }
 
@@ -2574,6 +2584,7 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         let pending = state.store.pending_wervik_connect();
         let valid = pending.as_ref().is_some_and(|pending| {
             Some(pending.state.as_str()) == callback_state.as_deref()
+                && pending.redirect_scheme == url.scheme()
                 && pending.expires_at > now_unix()
         });
         if !valid {
@@ -2632,10 +2643,16 @@ pub fn connect_wervik_account(app: tauri::AppHandle, state: State<AppStateHandle
         let pending = PendingWervikConnect {
             state: connect_state.clone(),
             code_verifier: code_verifier.clone(),
+            redirect_scheme: WERVIK_REDIRECT_SCHEME.to_string(),
             installation_id: installation_id.clone(),
             expires_at: now_unix() + WERVIK_CONNECT_DURATION_S,
         };
-        let url = web_connect_url(&installation_id, &connect_state, &pkce_challenge(&code_verifier))?;
+        let url = web_connect_url(
+            &installation_id,
+            &connect_state,
+            &pkce_challenge(&code_verifier),
+            WERVIK_REDIRECT_SCHEME,
+        )?;
         state.store.set_pending_wervik_connect(pending.clone());
         url
     };

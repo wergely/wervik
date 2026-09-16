@@ -22,6 +22,7 @@ pub struct WervikAccount {
 pub struct PendingWervikConnect {
     pub state: String,
     pub code_verifier: String,
+    pub redirect_scheme: String,
     pub installation_id: String,
     pub expires_at: i64,
 }
