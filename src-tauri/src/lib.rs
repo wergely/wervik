@@ -38,6 +38,11 @@ pub fn run() {
         .setup(|app| {
             #[cfg(desktop)]
             {
+                #[cfg(any(windows, target_os = "linux"))]
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("Could not register the wervik:// URL scheme: {error}");
+                }
+
                 let app_handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     for url in event.urls() {
