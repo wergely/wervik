@@ -1,7 +1,7 @@
 [package]
 name = "wervik"
 version = "0.1.2"
-description = "Wervik — your Steam, Xbox, Battle.net, EA App, and retro games, one library."
+description = "Wervik — your Steam and retro games, one library."
 authors = ["Wergely"]
 edition = "2021"
 

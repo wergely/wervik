@@ -2,7 +2,7 @@
 //! (never by executing their binaries directly) and to open a game's store
 //! page.
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 use tauri::AppHandle;
@@ -31,7 +31,15 @@ fn open_steam_uri(app: &AppHandle, uri: &str, _launch_kind: LaunchKind) -> Resul
     platform::open_url(app, uri)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn open_steam_uri(app: &AppHandle, uri: &str, launch_kind: LaunchKind) -> Result<(), String> {
+    if launch_kind == LaunchKind::Windows {
+        return Err("Windows Steam launch is unavailable on macOS.".into());
+    }
+    platform::open_url(app, uri)
+}
+
+#[cfg(target_os = "linux")]
 fn open_steam_uri(_app: &AppHandle, uri: &str, launch_kind: LaunchKind) -> Result<(), String> {
     let result = match launch_kind {
         LaunchKind::Flatpak => Command::new("flatpak")
@@ -54,4 +62,16 @@ fn open_steam_uri(_app: &AppHandle, uri: &str, launch_kind: LaunchKind) -> Resul
             .map_err(|e| format!("Could not open Steam: {e}")),
         Err(e) => Err(format!("Could not open Steam: {e}")),
     }
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "linux"),
+    not(target_os = "macos")
+))]
+fn open_steam_uri(app: &AppHandle, uri: &str, launch_kind: LaunchKind) -> Result<(), String> {
+    if launch_kind == LaunchKind::Windows {
+        return Err("Windows Steam launch is unavailable on this platform.".into());
+    }
+    platform::open_url(app, uri)
 }

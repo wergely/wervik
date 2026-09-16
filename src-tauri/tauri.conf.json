@@ -37,7 +37,7 @@
     },
     "category": "Game",
     "shortDescription": "Your games. One library.",
-    "longDescription": "Wervik is a fast, controller-friendly library for browsing and launching your installed Steam, Xbox App/Game Pass, Battle.net, EA App, and retro games on Windows.",
+    "longDescription": "Wervik is a fast, controller-friendly library for browsing and launching your installed Steam and retro games.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

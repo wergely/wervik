@@ -78,8 +78,8 @@ export function getRaProfileSummary(): Promise<RaProfileSummary | null> {
 }
 
 /** Enables (or disables) RetroArch's own live RetroAchievements engine for
- * the platforms launched through Wervik's managed RetroArch (Arcade, CPS,
- * Neo Geo). `password` is relayed into RetroArch's own config and never
+ * the platforms launched through Wervik's managed RetroArch. `password` is
+ * relayed into RetroArch's own config and never
  * stored by Wervik — pass an empty string when `enabled` is false. */
 export function applyRetroArchAchievements(
   enabled: boolean,

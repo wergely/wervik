@@ -1,4 +1,4 @@
-//! Small OS integration helpers shared by the Windows and Linux builds.
+//! Small OS integration helpers shared by the Windows, macOS, and Linux builds.
 //!
 //! Keeping these calls behind one module prevents feature code from reaching
 //! for `xdg-open`, `start`, or another platform-specific command directly.

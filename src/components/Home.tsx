@@ -5,6 +5,7 @@ import { EmptyState } from "./EmptyState";
 import { LibrarySection } from "./LibrarySection";
 import { SuggestedGameCard } from "./SuggestedGameCard";
 import { suggestGames } from "../utils/recommendations";
+import { IS_MACOS } from "../utils/platform";
 import { useElementWidth } from "../hooks/useElementWidth";
 import styles from "./Home.module.css";
 
@@ -75,7 +76,11 @@ export function Home({
         <EmptyState
           icon="⚠"
           title="No game sources found"
-          message="Install a game through Steam, Xbox App/Game Pass or Battle.net, or add a retro ROM folder, then rescan."
+          message={
+            IS_MACOS
+              ? "Install a game through Steam or add a retro ROM folder, then rescan."
+              : "Install a game through Steam, Xbox App/Game Pass or Battle.net, or add a retro ROM folder, then rescan."
+          }
           actionLabel={rescanning ? "Scanning…" : "Rescan"}
           onAction={onRescan}
           busy={rescanning}
@@ -90,7 +95,11 @@ export function Home({
         <EmptyState
           icon="📦"
           title="No games found"
-          message="Install a game from Steam, Xbox App/Game Pass or Battle.net, or configure the Steam Web API in Settings to show your owned games, then rescan your library."
+          message={
+            IS_MACOS
+              ? "Install a game from Steam, or configure the Steam Web API in Settings to show your owned games, then rescan your library."
+              : "Install a game from Steam, Xbox App/Game Pass or Battle.net, or configure the Steam Web API in Settings to show your owned games, then rescan your library."
+          }
           actionLabel={rescanning ? "Scanning…" : "Rescan"}
           onAction={onRescan}
           busy={rescanning}

@@ -1,6 +1,7 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Game, GameSource, Settings, SortMode } from "../types";
+import { IS_MACOS } from "../utils/platform";
 import { GameCard } from "./GameCard";
 import { MultiSelect, type MultiSelectOption } from "./MultiSelect";
 import styles from "./LibrarySection.module.css";
@@ -20,7 +21,10 @@ const sourceOptions: readonly MultiSelectOption<GameSource>[] = [
   { value: "battlenet", label: "Battle.net" },
   { value: "ea", label: "EA App" },
   { value: "retro", label: "Retro" },
-];
+].filter(
+  (option): option is MultiSelectOption<GameSource> =>
+    !IS_MACOS || (option.value !== "xbox" && option.value !== "battlenet" && option.value !== "ea"),
+);
 
 // Mirrors the grid's own `minmax(170px, 1fr)` track sizing so the
 // JS-computed column count matches what the CSS would have laid out.
@@ -56,7 +60,9 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
   const advancedRef = useRef<HTMLDivElement>(null);
   const sortMode: SortMode = settings?.librarySortMode ?? "playtime";
   const favoritesOnly = settings?.libraryFavoritesOnly ?? false;
-  const sourceFilter = settings?.librarySourceFilter ?? [];
+  const sourceFilter = (settings?.librarySourceFilter ?? []).filter((source) =>
+    sourceOptions.some((option) => option.value === source),
+  );
   const platformFilter = settings?.libraryPlatformFilter ?? [];
   const igdbGenreFilter = settings?.libraryIgdbGenreFilter ?? [];
   const igdbPlatformFilter = settings?.libraryIgdbPlatformFilter ?? [];

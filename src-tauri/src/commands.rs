@@ -1696,7 +1696,7 @@ pub fn get_ra_profile_summary(state: State<AppStateHandle>) -> Result<Option<RaP
 
 /// Points RetroArch's own RetroAchievements engine (real-time unlock
 /// popups, hardcore mode) at the user's account for the platforms Wervik
-/// launches through a managed RetroArch install (Arcade, CPS, Neo Geo) —
+/// launches through a managed RetroArch install —
 /// see `retro::native::set_retroarch_achievements`. Unrelated to the
 /// read-only viewer above: this never touches Wervik's own settings file,
 /// and the account password passed in is never stored by Wervik itself —
@@ -2745,7 +2745,7 @@ pub fn apply_game_setup(
     Ok(game_setup_status(&state, app_id))
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

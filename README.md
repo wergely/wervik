@@ -2,8 +2,9 @@
 
 Your games. One library.
 
-Wervik is a fast, controller-friendly Windows desktop library for browsing
-and launching your installed Steam, Xbox App/Game Pass, Battle.net, EA App, and retro games. It
+Wervik is a fast, controller-friendly desktop library for browsing
+and launching your installed Steam and retro games on macOS and Windows. On
+Windows it also supports Xbox App/Game Pass, Battle.net, and EA App. It
 reads local library data directly and can optionally enrich the selected game's
 details through IGDB — no Wervik account or cloud library is required.
 
@@ -11,10 +12,18 @@ Wervik — by Wergely.
 
 ## Development
 
-```powershell
+```sh
 npm install
 npm run tauri dev
 ```
+
+On macOS, Wervik scans the standard Steam location at
+`~/Library/Application Support/Steam` and launches games through Steam's
+`steam://` protocol. Xbox App/Game Pass, Battle.net, and EA App are not offered
+there, and MangoHud/GameMode/Gamescope are Windows/Linux-only integrations.
+Retro platforms with a bundled EmulatorJS core continue to use that runtime;
+the Platform Setup screen can also download the official universal RetroArch
+app plus architecture-matched macOS Libretro cores for native launching.
 
 ## Testing on Windows
 
@@ -67,6 +76,10 @@ a matching Nexus page.
 npm run tauri build
 ```
 
+On macOS, `npm run tauri build` produces an `.app` and `.dmg`. The release
+workflow builds Windows installers plus macOS artifacts for Apple Silicon and
+Intel.
+
 ## Recommended IDE Setup
 
 - [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with Desktop development with C++
@@ -79,9 +92,11 @@ The Windows build uses the Microsoft Edge WebView2 runtime. Windows 10
 download it when necessary.
 
 The Windows baseline uses the bundled EmulatorJS runtime for console games.
-For Arcade and Neo Geo CD, Wervik can download the official Windows
-portable RetroArch package and the selected Libretro core into its own
-application data directory without requiring an elevated Windows install.
+For Arcade and Neo Geo CD, Wervik can download the official Windows portable
+RetroArch package and the selected Libretro core into its own application data
+directory without requiring an elevated Windows install. The macOS build uses
+the official universal RetroArch Metal app and downloads matching `.dylib`
+cores for the current Apple Silicon or Intel architecture.
 FBNeo is used for CPS and Neo Geo arcade ZIP sets; NeoCD is the recommended
 Neo Geo CD core, with Geolith and FBNeo available as alternatives. Geolith
 requires a complete MAME BIOS pack. No ROM or BIOS files are downloaded.

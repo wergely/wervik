@@ -136,56 +136,62 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
 
           <p className={styles.sectionLabel}>Default Emulator</p>
 
-          <div className={styles.emulatorList}>
-            {platform.emulatorOptions.map((option) => {
-              const isSelected = option.id === platform.selectedEmulator;
-              const isInstalling = installing === option.id;
-              const offerDownload = !option.available && option.managed;
-              return (
-                <div key={option.id} className={styles.emulatorItem}>
-                  <button
-                    type="button"
-                    className={`${styles.emulatorCard} ${isSelected ? styles.emulatorCardSelected : ""}`}
-                    data-nav-item
-                    onClick={() => handleSelectEmulator(option.id)}
-                    disabled={!option.available}
-                    aria-pressed={isSelected}
-                  >
-                    <span className={styles.radioDot} aria-hidden="true" />
-                    <div className={styles.emulatorCardBody}>
-                      <div className={styles.emulatorCardTop}>
-                        <span className={styles.emulatorName}>{option.displayName}</span>
-                        <span className={styles.kindBadge}>{option.kind === "builtIn" ? "Built-in" : "Native"}</span>
-                      </div>
-                      <div className={styles.emulatorCardBottom}>
-                        <span className={!option.available ? styles.statusWarning : styles.status}>
-                          {isSelected ? "Selected · " : ""}
-                          {availabilityLabel(option)}
-                        </span>
-                        {option.recommended && <span className={styles.recommended}>Recommended</span>}
-                      </div>
-                    </div>
-                  </button>
-
-                  {offerDownload && (
+          {platform.emulatorOptions.length > 0 ? (
+            <div className={styles.emulatorList}>
+              {platform.emulatorOptions.map((option) => {
+                const isSelected = option.id === platform.selectedEmulator;
+                const isInstalling = installing === option.id;
+                const offerDownload = !option.available && option.managed;
+                return (
+                  <div key={option.id} className={styles.emulatorItem}>
                     <button
                       type="button"
-                      className={styles.downloadButton}
+                      className={`${styles.emulatorCard} ${isSelected ? styles.emulatorCardSelected : ""}`}
                       data-nav-item
-                      onClick={() => handleInstall(option.id)}
-                      disabled={isInstalling}
-                      aria-label={`Download ${option.displayName}`}
+                      onClick={() => handleSelectEmulator(option.id)}
+                      disabled={!option.available}
+                      aria-pressed={isSelected}
                     >
-                      {isInstalling && <Spinner />}
-                      {isInstalling ? "Downloading…" : "Download"}
+                      <span className={styles.radioDot} aria-hidden="true" />
+                      <div className={styles.emulatorCardBody}>
+                        <div className={styles.emulatorCardTop}>
+                          <span className={styles.emulatorName}>{option.displayName}</span>
+                          <span className={styles.kindBadge}>{option.kind === "builtIn" ? "Built-in" : "Native"}</span>
+                        </div>
+                        <div className={styles.emulatorCardBottom}>
+                          <span className={!option.available ? styles.statusWarning : styles.status}>
+                            {isSelected ? "Selected · " : ""}
+                            {availabilityLabel(option)}
+                          </span>
+                          {option.recommended && <span className={styles.recommended}>Recommended</span>}
+                        </div>
+                      </div>
                     </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
 
-          {platform.requiresBios && (
+                    {offerDownload && (
+                      <button
+                        type="button"
+                        className={styles.downloadButton}
+                        data-nav-item
+                        onClick={() => handleInstall(option.id)}
+                        disabled={isInstalling}
+                        aria-label={`Download ${option.displayName}`}
+                      >
+                        {isInstalling && <Spinner />}
+                        {isInstalling ? "Downloading…" : "Download"}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className={styles.fallbackNotice}>
+              No compatible emulator is available for this platform in this build yet.
+            </p>
+          )}
+
+          {platform.requiresBios && platform.emulatorOptions.length > 0 && (
             <BiosControl platformKey={platform.key} platformName={platform.displayName} />
           )}
 
@@ -220,10 +226,12 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
             </p>
           )}
 
-          <p className={styles.hint}>
-            Wervik uses the selected emulator by default for {platform.displayName} games. Individual games can
-            override this setting.
-          </p>
+          {platform.emulatorOptions.length > 0 && (
+            <p className={styles.hint}>
+              Wervik uses the selected emulator by default for {platform.displayName} games. Individual games can
+              override this setting.
+            </p>
+          )}
 
           {selected && selected.kind === "native" && (
             <div className={styles.actionRow}>

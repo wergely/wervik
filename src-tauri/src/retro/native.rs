@@ -6,8 +6,9 @@
 //! cross-origin-isolation headers this local server doesn't set),
 //! DuckStation for PlayStation (the modern standard PS1 emulator — better
 //! compatibility and performance than the WASM `mednafen_psx_hw` core),
-//! and RetroArch cores for N64, arcade, and Neo Geo CD on Windows (the latter
-//! two have no vendored EmulatorJS core — see `Platform::default_core`).
+//! and RetroArch cores for N64, arcade, Neo Geo CD, and the other supported
+//! systems on Windows and macOS (the latter two have no vendored EmulatorJS
+//! core — see `Platform::default_core`).
 //!
 //! Wervik downloads and manages its native emulators itself (see `install`)
 //! rather than relying on the system package manager or Flatpak — the same idea
@@ -24,9 +25,9 @@
 //! plain binary, and FBNeo's is a zip containing the binary alongside
 //! docs/license files; see `install`/`ManagedKind` for how each is handled.
 //!
-//! On Windows, N64 uses the managed Mupen64Plus-Next RetroArch core so it
-//! follows the same download, configuration, and launch path as the arcade
-//! cores. Linux keeps its existing gopher64 path.
+//! On Windows and macOS, N64 uses the managed Mupen64Plus-Next RetroArch core
+//! so it follows the same download, configuration, and launch path as the
+//! arcade cores. Linux keeps its existing native paths.
 
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -124,7 +125,7 @@ impl NativeEmulator {
 /// purely a description of what Wervik *could* use, in a fixed preference
 /// order (first = default when nothing's been explicitly chosen). Whether
 /// each one is actually installed is a separate, real check (`is_available`).
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     match platform {
         Platform::Nintendo64 => vec![NativeEmulator {
@@ -180,6 +181,7 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
 /// (`CemuApp.cpp`'s `DeterminePaths`), which `install` creates once so its
 /// config/keys/mlc data stay inside Wervik's own managed directory instead
 /// of the user's system config folder.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn cemu_emulator() -> NativeEmulator {
     NativeEmulator {
         id: "cemu",
@@ -204,7 +206,7 @@ fn cemu_emulator() -> NativeEmulator {
 /// same libretro core EmulatorJS already vendors for that platform (see
 /// `managed_release_for`) — a native build of a core already trusted here,
 /// not an unrelated one that could behave differently.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn plain_retroarch_core(id: &'static str, display_name: &'static str) -> NativeEmulator {
     NativeEmulator {
         id,
@@ -218,12 +220,30 @@ fn plain_retroarch_core(id: &'static str, display_name: &'static str) -> NativeE
     }
 }
 
+#[cfg(target_os = "macos")]
+fn plain_retroarch_core_with_bios(
+    id: &'static str,
+    display_name: &'static str,
+    bios_relpath: Option<&'static str>,
+) -> NativeEmulator {
+    NativeEmulator {
+        id,
+        display_name,
+        launcher: Launcher::Managed,
+        recommended: true,
+        launch_args: &["-L", "{core}", "{rom}"],
+        settings_args: &["--menu"],
+        bios_relpath,
+        required_system_libs: &[],
+    }
+}
+
 /// GameCube and Wii share the exact same libretro core — Dolphin's own,
 /// covering both systems here just like the standalone emulator does.
 /// Unlike `plain_retroarch_core`'s entries, this is `recommended`: neither
 /// platform has any EmulatorJS fallback at all (see `Platform::default_core`),
 /// so this is the only real option rather than an alternative to one.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn dolphin_core_emulator(id: &'static str, display_name: &'static str) -> NativeEmulator {
     NativeEmulator {
         id,
@@ -240,7 +260,7 @@ fn dolphin_core_emulator(id: &'static str, display_name: &'static str) -> Native
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
     match platform {
         Platform::Nes => vec![plain_retroarch_core("retroarch-nes", "RetroArch · FCEUmm")],
@@ -337,36 +357,63 @@ pub fn native_emulators_for(platform: Platform) -> Vec<NativeEmulator> {
                 required_system_libs: &[],
             },
         ],
-        // No libretro/EmulatorJS core exists for PS2 at anywhere near
-        // usable quality (RetroArch's only PS2 core, "Play!", is far behind
-        // standalone PCSX2 in both compatibility and performance) — PCSX2
-        // itself is the only real option, launched directly rather than
-        // through RetroArch. `-portable` keeps its config/memory
-        // cards/BIOS search path inside its own managed directory instead
-        // of the user's system config folder (verified against the real
-        // binary's `-h` output, same as every flag below).
-        Platform::PlayStation2 => vec![NativeEmulator {
-            id: "pcsx2",
-            display_name: "PCSX2",
-            launcher: Launcher::Managed,
-            recommended: true,
-            launch_args: &["-portable", "-batch", "-fullscreen", "{rom}"],
-            settings_args: &["-portable"],
-            // PCSX2 (in portable mode) looks for the user-supplied PS2 BIOS
-            // dump in a `bios` folder inside its own data directory —
-            // verified against the real binary's embedded BIOS-setup text.
-            bios_relpath: Some("bios/"),
-            required_system_libs: &[],
-        }],
-        Platform::WiiU => vec![cemu_emulator()],
+        // No EmulatorJS core exists for PS2. Windows uses standalone PCSX2,
+        // while macOS uses the official PCSX2 libretro core; both are kept
+        // as the only native option because PS2 support through the browser
+        // path is not usable enough to be an honest fallback.
+        Platform::PlayStation2 => {
+            #[cfg(target_os = "windows")]
+            {
+                vec![NativeEmulator {
+                    id: "pcsx2",
+                    display_name: "PCSX2",
+                    launcher: Launcher::Managed,
+                    recommended: true,
+                    launch_args: &["-portable", "-batch", "-fullscreen", "{rom}"],
+                    settings_args: &["-portable"],
+                    // PCSX2 (in portable mode) looks for the user-supplied PS2 BIOS
+                    // dump in a `bios` folder inside its own data directory —
+                    // verified against the real binary's embedded BIOS-setup text.
+                    bios_relpath: Some("bios/"),
+                    required_system_libs: &[],
+                }]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                vec![plain_retroarch_core_with_bios(
+                    "retroarch-playstation2",
+                    "RetroArch · PCSX2",
+                    Some("system/pcsx2/bios/"),
+                )]
+            }
+        }
+        Platform::WiiU => {
+            #[cfg(target_os = "windows")]
+            {
+                vec![cemu_emulator()]
+            }
+            #[cfg(target_os = "macos")]
+            {
+                vec![plain_retroarch_core_with_bios(
+                    "retroarch-wiiu",
+                    "RetroArch · Cemu",
+                    Some("system/Cemu/keys.txt"),
+                )]
+            }
+        }
         Platform::GameCube => vec![dolphin_core_emulator("retroarch-gamecube", "RetroArch · Dolphin")],
         Platform::Wii => vec![dolphin_core_emulator("retroarch-wii", "RetroArch · Dolphin")],
     }
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn native_emulators_for(_platform: Platform) -> Vec<NativeEmulator> {
+    Vec::new()
+}
+
 /// Where a `Launcher::Managed` emulator's real release comes from and what
-/// shape the downloaded asset is in. The Windows RetroArch package comes
-/// from the official Libretro buildbot rather than GitHub.
+/// shape the downloaded asset is in. RetroArch packages come from the
+/// official Libretro buildbot rather than GitHub.
 #[derive(Debug, Clone, Copy)]
 enum DownloadSource {
     Github {
@@ -417,17 +464,18 @@ enum ManagedKind {
     /// extracted via `sevenz_rust` instead of the `zip` crate, same as
     /// `install_retroarch` already does for RetroArch's own portable package.
     SevenZipBinary { binary_name: &'static str },
-    /// RetroArch is distributed as an official Windows portable archive and
-    /// its cores as small per-core archives from the official Libretro buildbot.
+    /// RetroArch is distributed as an official platform package and its cores
+    /// as small per-core archives from the official Libretro buildbot.
     RetroArch { core_name: &'static str },
 }
 
 /// Whether `emulator_id`'s release is actually RetroArch (as opposed to
 /// some other `Launcher::Managed` emulator, e.g. PCSX2) — every managed
-/// emulator on Windows used to be RetroArch-based, so `ensure_retroarch_defaults`
-/// used to be safe to call for any `Launcher::Managed` emulator; that
-/// stopped being true once a non-RetroArch one (PCSX2) existed.
-#[cfg(target_os = "windows")]
+/// emulator on Windows used to be RetroArch-based, so
+/// `ensure_retroarch_defaults` used to be safe to call for any
+/// `Launcher::Managed` emulator; that stopped being true once a non-RetroArch
+/// one (PCSX2) existed.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn is_retroarch_based(emulator_id: &str) -> bool {
     matches!(
         managed_release_for(emulator_id).map(|release| release.kind),
@@ -435,10 +483,24 @@ fn is_retroarch_based(emulator_id: &str) -> bool {
     )
 }
 
-const RETROARCH_WINDOWS_PORTABLE: &str =
+#[cfg(target_os = "windows")]
+const RETROARCH_PACKAGE_URL: &str =
     "https://buildbot.libretro.com/stable/1.22.1/windows/x86_64/RetroArch.7z";
-const RETROARCH_WINDOWS_CORE_BASE: &str =
-    "https://buildbot.libretro.com/nightly/windows/x86_64/latest";
+#[cfg(target_os = "macos")]
+const RETROARCH_PACKAGE_URL: &str =
+    "https://buildbot.libretro.com/stable/1.22.2/apple/osx/universal/RetroArch_Metal.dmg";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const RETROARCH_PACKAGE_URL: &str = "";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const RETROARCH_CORE_BASE: &str =
+    "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const RETROARCH_CORE_BASE: &str =
+    "https://buildbot.libretro.com/nightly/apple/osx/x86_64/latest";
+#[cfg(target_os = "windows")]
+const RETROARCH_CORE_BASE: &str = "https://buildbot.libretro.com/nightly/windows/x86_64/latest";
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+const RETROARCH_CORE_BASE: &str = "";
 
 fn managed_release_for(id: &str) -> Option<ManagedRelease> {
     match id {
@@ -472,7 +534,7 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
         // DuckStation's above — `asset_name`'s `*` covers the version its
         // real filename embeds (`Cemu-2.6-x86_64.AppImage`, verified
         // against the real v2.6 release), which changes every release.
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "linux")]
         "cemu" => Some(ManagedRelease {
             source: DownloadSource::Github {
                 repo: "cemu-project/Cemu",
@@ -482,21 +544,21 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
             kind: ManagedKind::AppImage,
         }),
         "retroarch-fbneo" => Some(ManagedRelease {
-            source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+            source: DownloadSource::Url(RETROARCH_PACKAGE_URL),
             kind: ManagedKind::RetroArch { core_name: "fbneo" },
         }),
         "retroarch-geolith" => Some(ManagedRelease {
-            source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+            source: DownloadSource::Url(RETROARCH_PACKAGE_URL),
             kind: ManagedKind::RetroArch {
                 core_name: "geolith",
             },
         }),
         "retroarch-neocd" => Some(ManagedRelease {
-            source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+            source: DownloadSource::Url(RETROARCH_PACKAGE_URL),
             kind: ManagedKind::RetroArch { core_name: "neocd" },
         }),
         "retroarch-mupen64plus-next" => Some(ManagedRelease {
-            source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+            source: DownloadSource::Url(RETROARCH_PACKAGE_URL),
             kind: ManagedKind::RetroArch {
                 core_name: "mupen64plus_next",
             },
@@ -523,10 +585,14 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
         "retroarch-pcengine" => Some(retroarch_core("mednafen_pce")),
         "retroarch-colecovision" => Some(retroarch_core("gearcoleco")),
         // Dolphin's own libretro core — verified present on the real
-        // buildbot listing for both Windows and Linux, and (uniquely among
+        // buildbot listing for Windows, macOS, and Linux, and (uniquely among
         // the cores here) covers two platforms at once, the same as the
         // real standalone Dolphin does.
         "retroarch-gamecube" | "retroarch-wii" => Some(retroarch_core("dolphin")),
+        #[cfg(target_os = "macos")]
+        "retroarch-playstation2" => Some(retroarch_core("pcsx2")),
+        #[cfg(target_os = "macos")]
+        "retroarch-wiiu" => Some(retroarch_core("cemu")),
         // PCSX2's official Windows release is a portable `.7z` with
         // `pcsx2-qt.exe` sitting at the archive root (verified against the
         // real v2.8.2 asset) — `asset_name`'s `*` stands in for the version
@@ -570,11 +636,11 @@ fn managed_release_for(id: &str) -> Option<ManagedRelease> {
     }
 }
 
-/// The standard shape of a managed RetroArch core release: the same
-/// official portable RetroArch package, with only the core name varying.
+/// The standard shape of a managed RetroArch core release: the same official
+/// RetroArch package for the current platform, with only the core name varying.
 fn retroarch_core(core_name: &'static str) -> ManagedRelease {
     ManagedRelease {
-        source: DownloadSource::Url(RETROARCH_WINDOWS_PORTABLE),
+        source: DownloadSource::Url(RETROARCH_PACKAGE_URL),
         kind: ManagedKind::RetroArch { core_name },
     }
 }
@@ -600,14 +666,44 @@ fn managed_executable_path(app_data_dir: &Path, id: &str) -> PathBuf {
     }
 }
 
-/// The official portable RetroArch archive currently has a top-level
+/// The official Windows portable RetroArch archive currently has a top-level
 /// `RetroArch-Win64` directory, while older packages placed the executable at
 /// the archive root. Keep both layouts working so an already extracted
 /// package can be reused without another 200 MB download.
+#[cfg(target_os = "windows")]
 fn retroarch_executable_path(app_data_dir: &Path) -> PathBuf {
     let package_dir = managed_dir(app_data_dir).join("retroarch");
     let fallback = package_dir.join("retroarch.exe");
     find_retroarch_executable(&package_dir, 2).unwrap_or(fallback)
+}
+
+#[cfg(target_os = "macos")]
+fn retroarch_executable_path(app_data_dir: &Path) -> PathBuf {
+    managed_dir(app_data_dir)
+        .join("retroarch")
+        .join("RetroArch.app")
+        .join("Contents")
+        .join("MacOS")
+        .join("RetroArch")
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn retroarch_executable_path(app_data_dir: &Path) -> PathBuf {
+    managed_dir(app_data_dir).join("retroarch").join("retroarch")
+}
+
+fn retroarch_runtime_dir(app_data_dir: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        managed_dir(app_data_dir).join("retroarch")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        retroarch_executable_path(app_data_dir)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| managed_dir(app_data_dir).join("retroarch"))
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -617,7 +713,7 @@ const RETROARCH_DEFAULTS_MARKER: &str = ".wervik-defaults-v2";
 /// RetroArch rewrites this file itself, so this intentionally edits only the
 /// first-level `key = "value"` entry and leaves comments and unrelated
 /// settings alone.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn set_retroarch_option(path: &Path, key: &str, value: &str) -> Result<(), String> {
     let contents = match std::fs::read_to_string(path) {
         Ok(contents) => contents,
@@ -791,7 +887,34 @@ fn ensure_retroarch_defaults(app_data_dir: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(target_os = "macos")]
+fn ensure_retroarch_macos_config(app_data_dir: &Path) -> Result<(), String> {
+    let runtime_dir = retroarch_runtime_dir(app_data_dir);
+    for directory in ["cores", "system", "saves", "states"] {
+        std::fs::create_dir_all(runtime_dir.join(directory)).map_err(|e| e.to_string())?;
+    }
+
+    let config_path = runtime_dir.join("retroarch.cfg");
+    if config_path.is_file() {
+        return Ok(());
+    }
+
+    let config_value = |path: &Path| {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    let config = format!(
+        "libretro_directory = \"{}\"\nsystem_directory = \"{}\"\nsavefile_directory = \"{}\"\nsavestate_directory = \"{}\"\n",
+        config_value(&runtime_dir.join("cores")),
+        config_value(&runtime_dir.join("system")),
+        config_value(&runtime_dir.join("saves")),
+        config_value(&runtime_dir.join("states")),
+    );
+    std::fs::write(config_path, config).map_err(|e| e.to_string())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn retroarch_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
     let executable = retroarch_executable_path(app_data_dir);
     if !executable.is_file() {
@@ -801,10 +924,7 @@ fn retroarch_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
                 .to_string(),
         );
     }
-    let runtime_dir = executable
-        .parent()
-        .ok_or_else(|| "Could not determine RetroArch's installation directory.".to_string())?;
-    Ok(runtime_dir.join("retroarch.cfg"))
+    Ok(retroarch_runtime_dir(app_data_dir).join("retroarch.cfg"))
 }
 
 /// Points the managed RetroArch install's own RetroAchievements engine
@@ -812,7 +932,7 @@ fn retroarch_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
 /// exchanges `password` for a session token and overwrites its own config
 /// with that token on next successful login — Wervik never stores this
 /// password itself, only relays it into RetroArch's config this once.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn enable_retroarch_achievements(
     app_data_dir: &Path,
     username: &str,
@@ -820,6 +940,8 @@ pub fn enable_retroarch_achievements(
     hardcore: bool,
 ) -> Result<(), String> {
     let config_path = retroarch_config_path(app_data_dir)?;
+    #[cfg(target_os = "macos")]
+    ensure_retroarch_macos_config(app_data_dir)?;
     set_retroarch_option(&config_path, "cheevos_enable", "true")?;
     set_retroarch_option(&config_path, "cheevos_username", username)?;
     set_retroarch_option(&config_path, "cheevos_password", password)?;
@@ -830,25 +952,27 @@ pub fn enable_retroarch_achievements(
     )
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn disable_retroarch_achievements(app_data_dir: &Path) -> Result<(), String> {
     let config_path = retroarch_config_path(app_data_dir)?;
+    #[cfg(target_os = "macos")]
+    ensure_retroarch_macos_config(app_data_dir)?;
     set_retroarch_option(&config_path, "cheevos_enable", "false")
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn enable_retroarch_achievements(
     _app_data_dir: &Path,
     _username: &str,
     _password: &str,
     _hardcore: bool,
 ) -> Result<(), String> {
-    Err("RetroArch achievements setup is only available on Windows.".to_string())
+    Err("RetroArch achievements setup is only available on Windows and macOS.".to_string())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn disable_retroarch_achievements(_app_data_dir: &Path) -> Result<(), String> {
-    Err("RetroArch achievements setup is only available on Windows.".to_string())
+    Err("RetroArch achievements setup is only available on Windows and macOS.".to_string())
 }
 
 /// Where PCSX2 (in portable mode) keeps its own settings — `bios/`'s own
@@ -946,8 +1070,14 @@ pub fn disable_pcsx2_achievements(_app_data_dir: &Path) -> Result<(), String> {
 /// enhancement rather than just a subjective shader/filter choice. Every
 /// 2D system Wervik supports already renders at its one native resolution,
 /// so there's nothing to offer there.
+#[cfg(target_os = "windows")]
 pub fn supports_graphics_preset(platform: Platform) -> bool {
     matches!(platform, Platform::Nintendo64 | Platform::PlayStation)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn supports_graphics_preset(_platform: Platform) -> bool {
+    false
 }
 
 /// Sets the internal render resolution for the platforms above, via each
@@ -966,7 +1096,7 @@ pub fn supports_graphics_preset(platform: Platform) -> bool {
 /// from `libretro/beetle-psx-libretro` (the Mednafen PSX HW core keeps its
 /// original "Beetle" option prefix and corename for compatibility with
 /// existing configs, even though the shipped binary is
-/// `mednafen_psx_hw_libretro.dll`).
+/// `mednafen_psx_hw_libretro.<platform extension>`).
 #[cfg(target_os = "windows")]
 pub fn apply_graphics_preset(app_data_dir: &Path, platform: Platform, optimized: bool) -> Result<(), String> {
     let (core_name, options): (&str, &[(&str, &str)]) = match platform {
@@ -1024,6 +1154,7 @@ pub fn apply_graphics_preset(_app_data_dir: &Path, _platform: Platform, _optimiz
     Err("Graphics presets are only available on Windows.".to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn find_retroarch_executable(dir: &Path, remaining_depth: u8) -> Option<PathBuf> {
     let direct = dir.join("retroarch.exe");
     if direct.is_file() {
@@ -1048,16 +1179,22 @@ fn managed_core_path(app_data_dir: &Path, id: &str) -> Option<PathBuf> {
     let Some(ManagedKind::RetroArch { core_name }) = managed_release_for(id).map(|r| r.kind) else {
         return None;
     };
-    let executable = managed_executable_path(app_data_dir, id);
-    let runtime_dir = executable
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| managed_dir(app_data_dir).join("retroarch"));
     Some(
-        runtime_dir
+        retroarch_runtime_dir(app_data_dir)
             .join("cores")
-            .join(format!("{core_name}_libretro.dll")),
+            .join(retroarch_core_file_name(core_name)),
     )
+}
+
+fn retroarch_core_file_name(core_name: &str) -> String {
+    let extension = if cfg!(target_os = "windows") {
+        "dll"
+    } else if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    format!("{core_name}_libretro.{extension}")
 }
 
 pub fn is_available(app_data_dir: &Path, emulator: &NativeEmulator) -> bool {
@@ -1081,7 +1218,7 @@ pub fn is_available(app_data_dir: &Path, emulator: &NativeEmulator) -> bool {
 /// waiting well past `artwork::new_agent`'s short per-request timeout
 /// rather than failing a slow-but-working download.
 const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
-/// RetroArch's Windows installer is currently a little over 200 MB. Keep a
+/// RetroArch's desktop package is currently a little over 200 MB. Keep a
 /// bounded response size while leaving room for the official package to grow.
 const MAX_DOWNLOAD_SIZE: u64 = 320 * 1024 * 1024;
 
@@ -1183,7 +1320,7 @@ fn download_managed_release(
 }
 
 fn install_retroarch_core(bytes: Vec<u8>, cores_dir: &Path, core_name: &str) -> Result<(), String> {
-    let expected_name = format!("{core_name}_libretro.dll");
+    let expected_name = retroarch_core_file_name(core_name);
     std::fs::create_dir_all(cores_dir).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| format!("Could not read the RetroArch core archive: {e}"))?;
@@ -1215,6 +1352,63 @@ fn install_retroarch_core(bytes: Vec<u8>, cores_dir: &Path, core_name: &str) -> 
     }
 }
 
+#[cfg(target_os = "macos")]
+fn install_retroarch_macos_package(bytes: Vec<u8>, retroarch_dir: &Path) -> Result<(), String> {
+    use std::process::Command;
+
+    let package_path = retroarch_dir.join("RetroArch_Metal.dmg");
+    let mount_dir = retroarch_dir.join("mount");
+    let app_path = retroarch_dir.join("RetroArch.app");
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    let _ = std::fs::remove_dir_all(&app_path);
+    std::fs::create_dir_all(&mount_dir).map_err(|e| e.to_string())?;
+    std::fs::write(&package_path, bytes).map_err(|e| e.to_string())?;
+
+    let attached = Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"])
+        .arg(&mount_dir)
+        .arg(&package_path)
+        .status()
+        .map_err(|e| format!("Could not mount the RetroArch package: {e}"))?;
+    if !attached.success() {
+        let _ = std::fs::remove_dir_all(&mount_dir);
+        let _ = std::fs::remove_file(&package_path);
+        return Err("Could not mount the RetroArch package.".to_string());
+    }
+
+    let copied = Command::new("/usr/bin/ditto")
+        .arg("--noqtn")
+        .arg(mount_dir.join("RetroArch.app"))
+        .arg(&app_path)
+        .status()
+        .map_err(|e| format!("Could not copy RetroArch.app: {e}"));
+    let detached = Command::new("/usr/bin/hdiutil")
+        .arg("detach")
+        .arg(&mount_dir)
+        .status()
+        .map_err(|e| format!("Could not unmount the RetroArch package: {e}"));
+    let _ = std::fs::remove_dir_all(&mount_dir);
+    let _ = std::fs::remove_file(&package_path);
+
+    match copied {
+        Ok(status) if status.success() => {}
+        Ok(_) => return Err("Could not copy RetroArch.app from the package.".to_string()),
+        Err(error) => return Err(error),
+    }
+    match detached {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err("Could not unmount the RetroArch package.".to_string()),
+        Err(error) => Err(error),
+    }
+}
+
+fn retroarch_core_url(core_name: &str) -> String {
+    format!(
+        "{RETROARCH_CORE_BASE}/{}.zip",
+        retroarch_core_file_name(core_name)
+    )
+}
+
 fn install_retroarch(
     app_data_dir: &Path,
     agent: &ureq::Agent,
@@ -1234,14 +1428,21 @@ fn install_retroarch(
             emulator.display_name,
         )?;
 
-        // Use the official portable 7z package instead of setup.exe. The
-        // latter carries an elevation manifest and Windows rejects
-        // CreateProcess with ERROR_ELEVATION_REQUIRED before its silent
-        // install flags can take effect. Extracting the archive in Wervik's
-        // app data keeps this install self-contained and UAC-free.
         let _ = std::fs::remove_dir_all(&retroarch_dir);
-        sevenz_rust::decompress(std::io::Cursor::new(portable_bytes), &retroarch_dir)
-            .map_err(|e| format!("Could not extract the RetroArch package: {e}"))?;
+        #[cfg(target_os = "windows")]
+        {
+            // Use the official portable 7z package instead of setup.exe. The
+            // latter carries an elevation manifest and Windows rejects
+            // CreateProcess with ERROR_ELEVATION_REQUIRED before its silent
+            // install flags can take effect. Extracting the archive in
+            // Wervik's app data keeps this install self-contained and UAC-free.
+            sevenz_rust::decompress(std::io::Cursor::new(portable_bytes), &retroarch_dir)
+                .map_err(|e| format!("Could not extract the RetroArch package: {e}"))?;
+        }
+        #[cfg(target_os = "macos")]
+        install_retroarch_macos_package(portable_bytes, &retroarch_dir)?;
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        return Err("RetroArch native cores are not available on this platform.".to_string());
 
         executable = managed_executable_path(app_data_dir, emulator.id);
 
@@ -1253,15 +1454,15 @@ fn install_retroarch(
         }
     }
 
-    let core_url = format!("{RETROARCH_WINDOWS_CORE_BASE}/{core_name}_libretro.dll.zip");
+    let core_url = retroarch_core_url(core_name);
     let core_bytes = download_bytes(agent, &core_url)?;
-    let runtime_dir = executable
-        .parent()
-        .ok_or_else(|| "Could not determine RetroArch's installation directory.".to_string())?;
+    let runtime_dir = retroarch_runtime_dir(app_data_dir);
     install_retroarch_core(core_bytes, &runtime_dir.join("cores"), core_name)?;
 
     #[cfg(target_os = "windows")]
     ensure_retroarch_defaults(app_data_dir)?;
+    #[cfg(target_os = "macos")]
+    ensure_retroarch_macos_config(app_data_dir)?;
 
     Ok(())
 }
@@ -1430,15 +1631,12 @@ pub fn install_bios(
     let Some(relpath) = emulator.bios_relpath else {
         return Ok(());
     };
-    let base_dir = managed_executable_path(app_data_dir, emulator.id)
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| {
-            format!(
-                "Could not determine where {} expects its files.",
-                emulator.display_name
-            )
-        })?;
+    let base_dir = emulator_working_dir(app_data_dir, emulator).ok_or_else(|| {
+        format!(
+            "Could not determine where {} expects its files.",
+            emulator.display_name
+        )
+    })?;
     let file_name = bios_source
         .file_name()
         .ok_or_else(|| "Selected BIOS path has no file name".to_string())?;
@@ -1465,11 +1663,7 @@ pub fn install_bios(
 /// RetroArch's private copy so one user-selected BIOS works with both naming
 /// conventions without modifying the user's original file.
 fn install_geolith_bios(app_data_dir: &Path, bios_source: &Path) -> Result<(), String> {
-    let executable = managed_executable_path(app_data_dir, "retroarch-geolith");
-    let base_dir = executable
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Could not determine RetroArch's installation directory.".to_string())?;
+    let base_dir = retroarch_runtime_dir(app_data_dir);
     let system_dir = base_dir.join("system");
     std::fs::create_dir_all(&system_dir).map_err(|e| e.to_string())?;
     let destination = system_dir.join("neocdz.zip");
@@ -1546,6 +1740,30 @@ fn emulator_path(app_data_dir: &Path, emulator: &NativeEmulator) -> String {
     }
 }
 
+fn emulator_working_dir(app_data_dir: &Path, emulator: &NativeEmulator) -> Option<PathBuf> {
+    if !matches!(emulator.launcher, Launcher::Managed) {
+        return None;
+    }
+    if is_retroarch_based_for_platform(emulator.id) {
+        return Some(retroarch_runtime_dir(app_data_dir));
+    }
+    managed_executable_path(app_data_dir, emulator.id)
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+fn is_retroarch_based_for_platform(emulator_id: &str) -> bool {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        is_retroarch_based(emulator_id)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = emulator_id;
+        false
+    }
+}
+
 /// Launches the emulator's own UI with no ROM — controller mapping, video
 /// backend, audio, and every other in-emulator setting is real
 /// functionality gopher64 (or a future native emulator) already has and
@@ -1557,14 +1775,21 @@ pub fn open_settings(app_data_dir: &Path, emulator: NativeEmulator) -> Result<Ch
     if is_retroarch_based(emulator.id) {
         ensure_retroarch_defaults(app_data_dir)?;
     }
+    #[cfg(target_os = "macos")]
+    if is_retroarch_based(emulator.id) {
+        ensure_retroarch_macos_config(app_data_dir)?;
+    }
 
     let path = emulator_path(app_data_dir, &emulator);
     let mut cmd = std::process::Command::new(&path);
+    #[cfg(target_os = "macos")]
+    if is_retroarch_based(emulator.id) {
+        cmd.arg("--config")
+            .arg(retroarch_runtime_dir(app_data_dir).join("retroarch.cfg"));
+    }
     cmd.args(emulator.settings_args);
-    if matches!(emulator.launcher, Launcher::Managed) {
-        if let Some(dir) = managed_executable_path(app_data_dir, emulator.id).parent() {
-            cmd.current_dir(dir);
-        }
+    if let Some(dir) = emulator_working_dir(app_data_dir, &emulator) {
+        cmd.current_dir(dir);
     }
     cmd.spawn()
         .map_err(|e| format!("Could not start {path}: {e}"))
@@ -1597,6 +1822,10 @@ pub fn spawn(
             ensure_retroarch_defaults(app_data_dir)?;
         }
     }
+    #[cfg(target_os = "macos")]
+    if is_retroarch_based(emulator.id) {
+        ensure_retroarch_macos_config(app_data_dir)?;
+    }
 
     let argv = build_argv(app_data_dir, emulator, rom_path, setup_dir, platform_key);
 
@@ -1605,12 +1834,10 @@ pub fn spawn(
     // A managed emulator resolves its own relative paths (config, saves,
     // and — for FBNeo specifically — its `roms/` BIOS directory, see
     // `install_bios`) against its working directory, not the exe's own
-    // location, on Linux — so run it from there rather than wherever
-    // Wervik's own process happens to be.
-    if matches!(emulator.launcher, Launcher::Managed) {
-        if let Some(dir) = managed_executable_path(app_data_dir, emulator.id).parent() {
-            cmd.current_dir(dir);
-        }
+    // location — so run it from there rather than wherever Wervik's own
+    // process happens to be.
+    if let Some(dir) = emulator_working_dir(app_data_dir, &emulator) {
+        cmd.current_dir(dir);
     }
     #[cfg(target_os = "linux")]
     if mangohud::is_enabled(setup_dir, platform_key) {
@@ -1650,6 +1877,20 @@ fn build_argv(
         }
     }));
 
+    #[cfg(target_os = "macos")]
+    if is_retroarch_based(emulator.id) {
+        let mut configured = vec![
+            argv[0].clone(),
+            "--config".to_string(),
+            retroarch_runtime_dir(app_data_dir)
+                .join("retroarch.cfg")
+                .to_string_lossy()
+                .to_string(),
+        ];
+        configured.extend(argv.into_iter().skip(1));
+        argv = configured;
+    }
+
     #[cfg(target_os = "linux")]
     {
         if mangohud::is_enabled(setup_dir, platform_key) {
@@ -1674,7 +1915,7 @@ fn build_argv(
     argv
 }
 
-#[cfg(all(test, not(target_os = "windows")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
@@ -1700,8 +1941,8 @@ mod tests {
         assert_eq!(native_emulators_for(Platform::WiiU)[0].id, "cemu");
         assert!(native_emulators_for(Platform::Snes).is_empty());
         // GameCube/Wii's only native option (the Dolphin libretro core) is
-        // Windows-only, same as every other per-core RetroArch option —
-        // Linux has no managed RetroArch-per-core mechanism at all yet.
+        // not available on Linux, which has no managed RetroArch-per-core
+        // mechanism at all yet.
         assert!(native_emulators_for(Platform::GameCube).is_empty());
         assert!(native_emulators_for(Platform::Wii).is_empty());
     }
@@ -2606,9 +2847,63 @@ mod windows_tests {
     }
 }
 
-// Only meaningful on Windows itself: the Linux test module above exercises
-// the `not(target_os = "windows")` variant of `native_emulators_for`, which
-// is a different function entirely (see the `#[cfg]` on each).
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+
+    #[test]
+    fn exposes_macos_libretro_options_for_native_only_platforms() {
+        let ps2 = native_emulators_for(Platform::PlayStation2);
+        assert_eq!(ps2.len(), 1);
+        assert_eq!(ps2[0].id, "retroarch-playstation2");
+        assert_eq!(ps2[0].bios_relpath, Some("system/pcsx2/bios/"));
+        assert!(matches!(
+            managed_release_for(ps2[0].id).unwrap().kind,
+            ManagedKind::RetroArch { core_name: "pcsx2" }
+        ));
+
+        let wii_u = native_emulators_for(Platform::WiiU);
+        assert_eq!(wii_u.len(), 1);
+        assert_eq!(wii_u[0].id, "retroarch-wiiu");
+        assert_eq!(wii_u[0].bios_relpath, Some("system/Cemu/keys.txt"));
+
+        assert_eq!(native_emulators_for(Platform::GameCube)[0].id, "retroarch-gamecube");
+        assert_eq!(native_emulators_for(Platform::Wii)[0].id, "retroarch-wii");
+    }
+
+    #[test]
+    fn uses_the_macos_app_bundle_and_dylib_core_paths() {
+        let app_data_dir = Path::new("/Users/tester/Library/Application Support/Wervik");
+        let emulator = native_emulators_for(Platform::Nintendo64)
+            .into_iter()
+            .next()
+            .unwrap();
+        let executable = managed_executable_path(app_data_dir, emulator.id);
+        assert!(executable.ends_with(
+            "emulators/retroarch/RetroArch.app/Contents/MacOS/RetroArch"
+        ));
+        let core = managed_core_path(app_data_dir, emulator.id).unwrap();
+        assert!(core.ends_with("emulators/retroarch/cores/mupen64plus_next_libretro.dylib"));
+
+        let argv = build_argv(
+            app_data_dir,
+            emulator,
+            Path::new("/Users/tester/ROMs/Super Mario 64.z64"),
+            app_data_dir,
+            "nintendo_64",
+        );
+        assert_eq!(argv[0], executable.to_string_lossy());
+        assert_eq!(argv[1], "--config");
+        assert!(argv[2].ends_with("emulators/retroarch/retroarch.cfg"));
+        assert_eq!(argv[3], "-L");
+        assert_eq!(argv[4], core.to_string_lossy());
+        assert_eq!(argv[5], "/Users/tester/ROMs/Super Mario 64.z64");
+    }
+}
+
+// These release-shape tests are Windows-only: the Linux and macOS test
+// modules above exercise different `native_emulators_for` implementations
+// (see the `#[cfg]` on each).
 #[cfg(all(test, target_os = "windows"))]
 mod windows_release_tests {
     use super::*;

@@ -27,7 +27,7 @@ pub enum LaunchKind {
     Windows,
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 fn candidate_roots() -> Vec<(PathBuf, LaunchKind)> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
@@ -50,6 +50,33 @@ fn candidate_roots() -> Vec<(PathBuf, LaunchKind)> {
             LaunchKind::Native,
         ),
     ]
+}
+
+#[cfg(target_os = "macos")]
+fn candidate_roots() -> Vec<(PathBuf, LaunchKind)> {
+    let mut candidates = Vec::new();
+
+    // Steam's macOS client keeps the same portable library layout as its
+    // other desktop clients, but stores the client data under Application
+    // Support instead of the Linux dot-directories or Windows registry.
+    if let Some(path) = std::env::var_os("STEAM_PATH") {
+        candidates.push((PathBuf::from(path), LaunchKind::Native));
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push((
+            home.join("Library/Application Support/Steam"),
+            LaunchKind::Native,
+        ));
+    }
+
+    candidates
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn candidate_roots() -> Vec<(PathBuf, LaunchKind)> {
+    dirs::home_dir()
+        .map(|home| vec![(home.join(".steam/steam"), LaunchKind::Native)])
+        .unwrap_or_default()
 }
 
 #[cfg(windows)]

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "longDescription": "Wervik is a fast, controller-friendly library for browsing and launching your installed Steam and retro games on macOS."
+  }
+}

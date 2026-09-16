@@ -13,6 +13,7 @@ import {
 } from "../api/tauri";
 import { useMetadataProgress } from "../hooks/useMetadataProgress";
 import type { LibrarySnapshot, PlatformStatus, RomDirectoryConfig, Settings as SettingsType } from "../types";
+import { IS_MACOS } from "../utils/platform";
 import { Spinner } from "./Spinner";
 import { Switch } from "./Switch";
 import styles from "./Settings.module.css";
@@ -49,7 +50,10 @@ const CATEGORIES: { id: Category; label: string }[] = [
   { id: "retroachievements", label: "RetroAchievements" },
   { id: "interface", label: "Interface" },
   { id: "audio", label: "Audio" },
-];
+].filter(
+  (entry): entry is { id: Category; label: string } =>
+    !IS_MACOS || (entry.id !== "xbox" && entry.id !== "battlenet" && entry.id !== "ea"),
+);
 
 /** Client ID/Secret are edited locally and only pushed to `onUpdateSettings`
  * on Save — unlike every other setting here, saving on each keystroke would
@@ -283,16 +287,18 @@ function RetroAchievementsFields({
 
       <NativeAchievementsSection
         title="Real achievements in RetroArch"
-        description="Arcade, CPS and Neo Geo games launch through Wervik's own managed RetroArch, which has a real RetroAchievements engine — unlock popups and hardcore mode included, unlike the viewer above. This sends your login straight into RetroArch's own config; Wervik never stores the password itself, and RetroArch replaces it with a session token as soon as it signs in."
+        description="Games launched through Wervik's own managed RetroArch use its real RetroAchievements engine — unlock popups and hardcore mode included, unlike the viewer above. This sends your login straight into RetroArch's own config; Wervik never stores the password itself, and RetroArch replaces it with a session token as soon as it signs in."
         username={username}
         apply={applyRetroArchAchievements}
       />
-      <NativeAchievementsSection
-        title="Real achievements in PCSX2"
-        description="PlayStation 2 games launch through Wervik's own managed PCSX2, which has the same real RetroAchievements engine. Unlike RetroArch, PCSX2 has no config field that logs itself in — Wervik performs that one-time login instead, and stores only the resulting session token (never your password) in PCSX2's own config."
-        username={username}
-        apply={applyPcsx2Achievements}
-      />
+      {!IS_MACOS && (
+        <NativeAchievementsSection
+          title="Real achievements in PCSX2"
+          description="PlayStation 2 games launch through Wervik's own managed PCSX2, which has the same real RetroAchievements engine. Unlike RetroArch, PCSX2 has no config field that logs itself in — Wervik performs that one-time login instead, and stores only the resulting session token (never your password) in PCSX2's own config."
+          username={username}
+          apply={applyPcsx2Achievements}
+        />
+      )}
     </>
   );
 }

@@ -359,7 +359,7 @@ export function GameDetail({
   }, [loadAchievements]);
 
   // Force a fresh read right after a play session on this exact game ends
-  // — most relevant for native RetroArch platforms (Arcade, CPS, Neo Geo),
+  // — most relevant for games launched through a native RetroArch core,
   // whose real achievements engine may have unlocked something meanwhile.
   useEffect(() => {
     if (justFinishedGameId && justFinishedGameId === game.id) {
