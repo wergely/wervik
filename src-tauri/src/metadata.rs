@@ -910,6 +910,14 @@ pub fn spawn_fetch(
                     let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        // The generation can change while this worker waits
+                        // for the state lock (for example, when the user
+                        // starts a per-game refresh). Check again while the
+                        // lock is held so an older result cannot overwrite
+                        // the newer manual result.
+                        if generation.load(Ordering::SeqCst) != generation_id {
+                            break;
+                        }
                         let image_paths = [metadata.cover_path.clone(), metadata.hero_path.clone()]
                             .into_iter()
                             .flatten()
@@ -931,6 +939,9 @@ pub fn spawn_fetch(
                 Ok(None) => {
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        if generation.load(Ordering::SeqCst) != generation_id {
+                            break;
+                        }
                         if let Err(error) = state.metadata_cache.mark_miss(game.id.clone()) {
                             eprintln!("Could not save metadata miss for {}: {error}", game.name);
                         }

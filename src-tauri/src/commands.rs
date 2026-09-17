@@ -67,8 +67,8 @@ pub struct AppState {
     pub steam_owned_games_fetch_running: Arc<AtomicBool>,
     pub metadata_fetch_running: Arc<AtomicBool>,
     pub metadata_progress: Arc<metadata::MetadataProgressState>,
-    /// Invalidates an in-flight metadata pass when credentials or the
-    /// selected provider changes, so it cannot keep using a stale token.
+    /// Invalidates in-flight metadata work when credentials, the selected
+    /// provider, or a per-game manual refresh changes the active request.
     pub metadata_fetch_generation: Arc<AtomicUsize>,
     pub store: Store,
     pub game_setup_dir: PathBuf,
@@ -1474,6 +1474,8 @@ fn fetch_and_store_metadata(
     settings: &Settings,
     wervik_access_token: Option<&str>,
     force: bool,
+    generation: &AtomicUsize,
+    generation_id: usize,
 ) -> Result<Option<GameMetadata>, String> {
     let Some(metadata) = metadata::fetch_game(
         app_data_dir,
@@ -1487,11 +1489,23 @@ fn fetch_and_store_metadata(
         force,
     )?
     else {
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Err("Metadata lookup was superseded by a newer request".into());
+        }
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Err("Metadata lookup was superseded by a newer request".into());
+        }
         state.metadata_cache.mark_miss(game_id)?;
         return Ok(None);
     };
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return Err("Metadata lookup was superseded by a newer request".into());
+    }
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return Err("Metadata lookup was superseded by a newer request".into());
+    }
     state
         .metadata_cache
         .put(game_id.clone(), metadata.clone())?;
@@ -1532,7 +1546,16 @@ pub fn get_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (cached, processed, app_data_dir, lookup_name, settings, wervik_access_token) = {
+    let (
+        cached,
+        processed,
+        app_data_dir,
+        lookup_name,
+        settings,
+        wervik_access_token,
+        metadata_generation,
+        generation_id,
+    ) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let settings = state.store.settings();
         let wervik_access_token = state
@@ -1557,6 +1580,8 @@ pub fn get_game_metadata(
             lookup_name,
             settings,
             wervik_access_token,
+            state.metadata_fetch_generation.clone(),
+            state.metadata_fetch_generation.load(Ordering::SeqCst),
         )
     };
     if let Some(metadata) = cached {
@@ -1575,6 +1600,8 @@ pub fn get_game_metadata(
         &settings,
         wervik_access_token.as_deref(),
         false,
+        &metadata_generation,
+        generation_id,
     )
 }
 
@@ -1592,8 +1619,13 @@ pub fn refresh_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (app_data_dir, lookup_name, settings, wervik_access_token) = {
+    let (app_data_dir, lookup_name, settings, wervik_access_token, metadata_generation, generation_id) = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let generation_id = state
+            .metadata_fetch_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
+        state.metadata_fetch_running.store(false, Ordering::SeqCst);
         state.metadata_cache.remove(&game_id)?;
         metadata::clear_artwork_for(&state.app_data_dir, &game_id)?;
         state.rebuild_known_image_paths();
@@ -1617,6 +1649,8 @@ pub fn refresh_game_metadata(
             lookup_name,
             settings,
             wervik_access_token,
+            state.metadata_fetch_generation.clone(),
+            generation_id,
         )
     };
 
@@ -1629,6 +1663,8 @@ pub fn refresh_game_metadata(
         &settings,
         wervik_access_token.as_deref(),
         true,
+        &metadata_generation,
+        generation_id,
     )
 }
 
