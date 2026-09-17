@@ -686,6 +686,80 @@ pub(crate) fn retroarch_runtime_dir(app_data_dir: &Path) -> PathBuf {
     }
 }
 
+/// Returns achievement screenshots captured by the managed RetroArch copy for
+/// a game. RetroArch names these `<rom-basename>-cheevo-<id>`, so include all
+/// regional ROM variants that can be launched from the same game detail view.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+pub fn achievement_screenshot_paths<'a>(
+    app_data_dir: &Path,
+    rom_paths: impl IntoIterator<Item = &'a str>,
+    game_name: &str,
+) -> Vec<String> {
+    let screenshot_dir = retroarch_runtime_dir(app_data_dir).join("screenshots");
+    let mut prefixes: Vec<String> = rom_paths
+        .into_iter()
+        .filter_map(|rom_path| {
+            Path::new(rom_path)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.trim().to_ascii_lowercase())
+        })
+        .filter(|prefix| !prefix.is_empty())
+        .collect();
+    if !game_name.trim().is_empty() {
+        prefixes.push(game_name.trim().to_ascii_lowercase());
+    }
+    prefixes.sort();
+    prefixes.dedup();
+    if prefixes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(screenshot_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg"
+                    )
+                })
+        })
+        .filter(|path| {
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            let file_name = file_name.to_ascii_lowercase();
+            prefixes.iter().any(|prefix| {
+                file_name.starts_with(&format!("{prefix}-cheevo-"))
+            })
+        })
+        .collect();
+    paths.sort_by_key(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+    });
+    paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn achievement_screenshot_paths<'a>(
+    _app_data_dir: &Path,
+    _rom_paths: impl IntoIterator<Item = &'a str>,
+    _game_name: &str,
+) -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(target_os = "windows")]
 const RETROARCH_DEFAULTS_MARKER: &str = ".wervik-defaults-v3";
 
@@ -974,6 +1048,10 @@ pub fn configure_retroarch_achievements(
         set_retroarch_option(&config_path, "cheevos_username", username)?;
         set_retroarch_option(&config_path, "cheevos_password", password)?;
     }
+    std::fs::create_dir_all(retroarch_runtime_dir(app_data_dir).join("screenshots"))
+        .map_err(|error| error.to_string())?;
+    set_retroarch_option(&config_path, "screenshot_directory", "screenshots")?;
+    set_retroarch_option(&config_path, "cheevos_auto_screenshot", "true")?;
     set_retroarch_option(
         &config_path,
         "cheevos_hardcore_mode_enable",

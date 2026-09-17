@@ -428,6 +428,28 @@
   gap: 8px;
 }
 
+.localScreenshotsSection {
+  margin-bottom: 24px;
+}
+
+.localScreenshotsHeading {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.localScreenshotsTitle {
+  color: var(--text);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.localScreenshotsCredit {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+}
+
 .metadataRefreshButton {
   width: 20px;
   height: 20px;

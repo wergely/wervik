@@ -20,6 +20,8 @@ export interface Game {
   coverPath: string | null;
   heroPath: string | null;
   logoPath: string | null;
+  /** Local RetroArch screenshots captured when this game unlocks an achievement. */
+  localScreenshotPaths: string[];
   isFavorite: boolean;
   /** Present only when `source === "steam"`. */
   appId: number | null;

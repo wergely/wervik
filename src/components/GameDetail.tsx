@@ -723,6 +723,25 @@ export function GameDetail({
             </section>
           )}
 
+          {game.localScreenshotPaths.length > 0 && (
+            <section className={styles.localScreenshotsSection} aria-label="Achievement screenshots">
+              <div className={styles.localScreenshotsHeading}>
+                <h2 className={styles.localScreenshotsTitle}>Achievement screenshots</h2>
+                <span className={styles.localScreenshotsCredit}>RetroArch</span>
+              </div>
+              <div className={styles.screenshots}>
+                {game.localScreenshotPaths.map((path, index) => (
+                  <MetadataScreenshot
+                    key={path}
+                    path={path}
+                    index={index}
+                    onOpen={openLightbox}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
           {achievementsLoading && <p className={styles.metadataStatus}>Loading achievements…</p>}
           {achievementsError && <p className={styles.launchError}>{achievementsError}</p>}
           {achievements && achievements.totalCount > 0 && (

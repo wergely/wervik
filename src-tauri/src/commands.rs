@@ -726,6 +726,9 @@ pub struct GameDto {
     pub cover_path: Option<String>,
     pub hero_path: Option<String>,
     pub logo_path: Option<String>,
+    /// Local screenshots automatically captured by RetroArch when this retro
+    /// game unlocks an achievement.
+    pub local_screenshot_paths: Vec<String>,
     pub is_favorite: bool,
     /// Present only for `source == Steam` — kept alongside `id` so the
     /// existing Steam-specific commands (launch, Setup drawer, overflow
@@ -864,6 +867,7 @@ fn steam_to_dto(game: &Game, store: &Store, playtime: &PlaytimeDb) -> GameDto {
             .logo_path
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&game.app_id.to_string()),
         app_id: Some(game.app_id),
         xbox_app_id: None,
@@ -900,6 +904,7 @@ fn steam_owned_to_dto(game: &OwnedGame, store: &Store, playtime: &PlaytimeDb) ->
         cover_path: Some(owned::cover_url(game.app_id)),
         hero_path: Some(owned::hero_url(game.app_id)),
         logo_path: game.icon_url.clone(),
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&game.app_id.to_string()),
         app_id: Some(game.app_id),
         xbox_app_id: None,
@@ -1043,6 +1048,13 @@ fn retro_to_dto(
             .map(|p| p.to_string_lossy().to_string()),
         hero_path: None,
         logo_path: None,
+        local_screenshot_paths: retro_native::achievement_screenshot_paths(
+            app_data_dir,
+            std::iter::once(rom.rom_path.as_str()).chain(
+                rom.variants.iter().map(|variant| variant.rom_path.as_str()),
+            ),
+            &rom.name,
+        ),
         is_favorite: store.is_favorite(&rom.id),
         app_id: None,
         xbox_app_id: None,
@@ -1096,6 +1108,7 @@ fn xbox_to_dto(game: &XboxGame, store: &Store, playtime: &PlaytimeDb) -> GameDto
         cover_path: logo_path.clone(),
         hero_path: logo_path.clone(),
         logo_path,
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&game.id),
         app_id: None,
         xbox_app_id: Some(game.aumid.clone()),
@@ -1143,6 +1156,7 @@ fn battlenet_to_dto(
         cover_path,
         hero_path,
         logo_path: None,
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&game.id),
         app_id: None,
         xbox_app_id: None,
@@ -1181,6 +1195,7 @@ fn ea_to_dto(game: &EaGame, store: &Store, playtime: &PlaytimeDb) -> GameDto {
         cover_path: None,
         hero_path: None,
         logo_path: None,
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&game.id),
         app_id: None,
         xbox_app_id: None,
@@ -3470,6 +3485,7 @@ fn known_image_paths(state: &AppState) -> std::collections::HashSet<String> {
                 .into_iter()
                 .flatten(),
         );
+        paths.extend(game.local_screenshot_paths);
     }
     for metadata in state.metadata_cache.values() {
         paths.extend(
