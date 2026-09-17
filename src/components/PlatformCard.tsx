@@ -18,11 +18,11 @@ export function PlatformCard({ platform, onSelect }: PlatformCardProps) {
       onClick={() => onSelect(platform)}
       aria-label={platform.displayName}
     >
-      {/* A generated, stable visual identity — not a random cover pulled
-          from one of the player's own games, which would make the same
-          platform look different every rescan. */}
+      {/* A stable visual identity — not a random cover pulled from one of the
+          player's own games, which would make the same platform look
+          different every rescan. */}
       <div className={styles.art}>
-        <PlatformIcon source="retro" platformKey={platform.key} size={56} />
+        <PlatformIcon source="retro" platformKey={platform.key} size={56} art />
       </div>
       <div className={styles.info}>
         <span className={styles.name}>{platform.displayName}</span>

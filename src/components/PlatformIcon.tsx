@@ -17,6 +17,23 @@ for (const path in iconModules) {
   if (key) retroIcons[key] = iconModules[path];
 }
 
+// Platform-page artwork can be supplied independently from the compact icon
+// used in badges and achievement rows. This keeps a cinematic card image from
+// being squeezed into a tiny source badge.
+const artModules = import.meta.glob("../assets/platform-art/*.png", { eager: true, import: "default" }) as Record<
+  string,
+  string
+>;
+const retroArt: Record<string, string> = {};
+for (const path in artModules) {
+  const key = path.split("/").pop()?.replace(/\.png$/, "");
+  if (key) retroArt[key] = artModules[path];
+}
+
+export function platformArtworkUrl(platformKey?: string | null): string | undefined {
+  return platformKey ? retroArt[platformKey] : undefined;
+}
+
 // Simple Icons has no Xbox entry (removed at the trademark holder's
 // request), so it falls back to the generic glyph below like an
 // unrecognized retro platform (e.g. Atari Jaguar, missing from the console
@@ -32,6 +49,8 @@ interface PlatformIconProps {
   /** `Game.platformKey` — only meaningful (and only looked up) when
    * `source === "retro"`. */
   platformKey?: string | null;
+  /** Use platform-page artwork instead of the compact console icon when available. */
+  art?: boolean;
   size?: number;
   className?: string;
 }
@@ -40,17 +59,22 @@ interface PlatformIconProps {
  * game come from": a real brand mark for Steam/Battle.net/EA, a real
  * console logo for a recognized retro platform, or a plain generic
  * controller glyph when neither is available. */
-export function PlatformIcon({ source, platformKey, size = 20, className }: PlatformIconProps) {
+export function PlatformIcon({ source, platformKey, art = false, size = 20, className }: PlatformIconProps) {
   if (source === "retro") {
+    const imageUrl = art ? platformArtworkUrl(platformKey) : undefined;
     const iconUrl = platformKey ? retroIcons[platformKey] : undefined;
-    if (iconUrl) {
+    if (imageUrl || iconUrl) {
       return (
         <img
-          src={iconUrl}
+          src={imageUrl ?? iconUrl}
           alt=""
           draggable={false}
           className={className}
-          style={{ width: size, height: size, objectFit: "contain" }}
+          style={{
+            width: imageUrl ? "100%" : size,
+            height: imageUrl ? "100%" : size,
+            objectFit: imageUrl ? "cover" : "contain",
+          }}
         />
       );
     }

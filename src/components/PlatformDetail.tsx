@@ -8,6 +8,7 @@ import {
 } from "../api/tauri";
 import type { EmulatorOption, PlatformStatus } from "../types";
 import { BiosControl } from "./BiosControl";
+import { platformArtworkUrl, PlatformIcon } from "./PlatformIcon";
 import { Spinner } from "./Spinner";
 import { Switch } from "./Switch";
 import styles from "./PlatformDetail.module.css";
@@ -109,6 +110,7 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
 
   const selected = platform.emulatorOptions.find((o) => o.id === platform.selectedEmulator);
   const effective = platform.emulatorOptions.find((o) => o.id === platform.effectiveEmulator);
+  const artworkUrl = platformArtworkUrl(platform.key);
 
   return (
     <div className={styles.detail}>
@@ -123,13 +125,25 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
         ← Platforms
       </button>
 
-      <div className={styles.layout}>
-        <div className={styles.main}>
+      <div className={styles.hero}>
+        {artworkUrl ? (
+          <img className={styles.heroImage} src={artworkUrl} alt="" draggable={false} />
+        ) : (
+          <div className={styles.heroFallbackIcon}>
+            <PlatformIcon source="retro" platformKey={platform.key} size={120} />
+          </div>
+        )}
+        <div className={styles.heroScrim} />
+        <div className={styles.heroContent}>
           <h1 className={styles.title}>{platform.displayName}</h1>
           <p className={styles.count}>
             {platform.romCount} {platform.romCount === 1 ? "game" : "games"} in your library
           </p>
+        </div>
+      </div>
 
+      <div className={styles.layout}>
+        <div className={styles.main}>
           <p className={styles.sectionLabel}>Default Emulator</p>
 
           {platform.emulatorOptions.length > 0 ? (
