@@ -60,6 +60,9 @@ pub struct PendingWervikConnect {
 pub struct Settings {
     #[serde(default)]
     pub fullscreen: bool,
+    /// Requests a normal, OS-maximized game window instead of fullscreen.
+    #[serde(default)]
+    pub maximize_games: bool,
     #[serde(default)]
     pub launch_on_startup: bool,
     #[serde(default = "default_ui_scale")]
@@ -130,14 +133,15 @@ pub struct Settings {
     pub igdb_client_id: String,
     #[serde(default)]
     pub igdb_client_secret: String,
-    /// RetroAchievements username and Web API key (from the site's own
-    /// "Keys" control panel page) for the read-only achievements viewer —
-    /// see `retroachievements`. Unrelated to the account password used to
-    /// enable RetroArch's own live achievements (never persisted here).
+    /// RetroAchievements username, Web API key, and account password. The
+    /// password is used by managed emulators for their live achievements
+    /// engine and is intentionally persisted alongside the other settings.
     #[serde(default)]
     pub ra_username: String,
     #[serde(default)]
     pub ra_api_key: String,
+    #[serde(default)]
+    pub ra_password: String,
     /// Steam Web API key (from <https://steamcommunity.com/dev/apikey>)
     /// for the same read-only achievements viewer, but for Steam games —
     /// see `steam::achievements`. The account's SteamID64 is detected
@@ -202,6 +206,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             fullscreen: false,
+            maximize_games: false,
             launch_on_startup: false,
             ui_scale: default_ui_scale(),
             metadata_provider: MetadataProvider::default(),
@@ -223,6 +228,7 @@ impl Default for Settings {
             igdb_client_secret: String::new(),
             ra_username: String::new(),
             ra_api_key: String::new(),
+            ra_password: String::new(),
             steam_api_key: String::new(),
             steam_id64_override: String::new(),
         }
@@ -303,6 +309,11 @@ pub struct StoredState {
     /// Local like/dislike preference keyed by the unified game id.
     #[serde(default)]
     pub game_reactions: HashMap<String, String>,
+    /// Unified ids of retro games that should launch with RetroAchievements'
+    /// Hardcore mode enabled. Absent means disabled, keeping old state files
+    /// backwards-compatible and the default safe for every game.
+    #[serde(default)]
+    pub retro_hardcore_game_ids: HashSet<String>,
     #[serde(default)]
     pub settings: Settings,
     #[serde(default, deserialize_with = "deserialize_rom_directories")]
@@ -491,6 +502,21 @@ impl Store {
             None => {
                 self.state.game_reactions.remove(game_id);
             }
+        }
+        self.persist();
+    }
+
+    pub fn is_retro_hardcore(&self, game_id: &str) -> bool {
+        self.state.retro_hardcore_game_ids.contains(game_id)
+    }
+
+    pub fn set_retro_hardcore(&mut self, game_id: &str, enabled: bool) {
+        if enabled {
+            self.state
+                .retro_hardcore_game_ids
+                .insert(game_id.to_string());
+        } else {
+            self.state.retro_hardcore_game_ids.remove(game_id);
         }
         self.persist();
     }
@@ -702,6 +728,30 @@ mod tests {
         let dir = scratch_dir("fresh");
         let store = Store::load(&dir);
         assert_eq!(store.default_emulator("nintendo_64"), None);
+    }
+
+    #[test]
+    fn retro_hardcore_mode_is_saved_per_game() {
+        let dir = scratch_dir("retro-hardcore");
+        let mut store = Store::load(&dir);
+        assert!(!store.is_retro_hardcore("game-a"));
+
+        store.set_retro_hardcore("game-a", true);
+        assert!(store.is_retro_hardcore("game-a"));
+        assert!(!store.is_retro_hardcore("game-b"));
+
+        let reloaded = Store::load(&dir);
+        assert!(reloaded.is_retro_hardcore("game-a"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn older_settings_without_a_retroachievements_password_still_load() {
+        let state: StoredState =
+            serde_json::from_str(r#"{"settings":{"raUsername":"player","raApiKey":"key"}}"#)
+                .unwrap();
+        assert_eq!(state.settings.ra_username, "player");
+        assert_eq!(state.settings.ra_password, "");
     }
 
     #[test]

@@ -39,6 +39,7 @@ use crate::steam::SteamCredentials;
 use crate::storage::{
     MetadataProvider, PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount,
 };
+use crate::window;
 use crate::xbox::discovery::XboxGame;
 
 pub struct AppState {
@@ -617,6 +618,7 @@ fn start_process_session(
         session_id,
         game_id.to_string(),
         target,
+        state.store.settings().maximize_games,
     );
     Ok(())
 }
@@ -722,6 +724,8 @@ pub struct GameDto {
     /// wired up), when the relevant credentials aren't configured, or
     /// before a match has been found/cached yet.
     pub achievement_completion_percent: Option<u8>,
+    /// Whether this retro game launches with RetroAchievements Hardcore mode.
+    pub hardcore_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -828,6 +832,7 @@ fn steam_to_dto(game: &Game, store: &Store, playtime: &PlaytimeDb) -> GameDto {
         default_region: None,
         variants: Vec::new(),
         achievement_completion_percent: None,
+        hardcore_mode: false,
     }
 }
 
@@ -863,6 +868,7 @@ fn steam_owned_to_dto(game: &OwnedGame, store: &Store, playtime: &PlaytimeDb) ->
         default_region: None,
         variants: Vec::new(),
         achievement_completion_percent: None,
+        hardcore_mode: false,
     }
 }
 
@@ -1016,6 +1022,7 @@ fn retro_to_dto(
         // the background sweep has already cached — this constructor has
         // no access to that cache.
         achievement_completion_percent: None,
+        hardcore_mode: store.is_retro_hardcore(&rom.id),
     }
 }
 
@@ -1057,6 +1064,7 @@ fn xbox_to_dto(game: &XboxGame, store: &Store, playtime: &PlaytimeDb) -> GameDto
         default_region: None,
         variants: Vec::new(),
         achievement_completion_percent: None,
+        hardcore_mode: false,
     }
 }
 
@@ -1103,6 +1111,7 @@ fn battlenet_to_dto(
         default_region: None,
         variants: Vec::new(),
         achievement_completion_percent: None,
+        hardcore_mode: false,
     }
 }
 
@@ -1140,6 +1149,7 @@ fn ea_to_dto(game: &EaGame, store: &Store, playtime: &PlaytimeDb) -> GameDto {
         default_region: None,
         variants: Vec::new(),
         achievement_completion_percent: None,
+        hardcore_mode: false,
     }
 }
 
@@ -1751,60 +1761,6 @@ pub fn get_ra_profile_summary(
     retroachievements::fetch_profile_summary(&username, &api_key).map(Some)
 }
 
-/// Points RetroArch's own RetroAchievements engine (real-time unlock
-/// popups, hardcore mode) at the user's account for the platforms Wervik
-/// launches through a managed RetroArch install —
-/// see `retro::native::set_retroarch_achievements`. Unrelated to the
-/// read-only viewer above: this never touches Wervik's own settings file,
-/// and the account password passed in is never stored by Wervik itself —
-/// only written into RetroArch's own config, which RetroArch immediately
-/// exchanges for a session token on next successful login.
-#[tauri::command(async)]
-pub fn apply_retroarch_achievements(
-    state: State<AppStateHandle>,
-    enabled: bool,
-    username: String,
-    password: String,
-    hardcore: bool,
-) -> Result<(), String> {
-    let app_data_dir = state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .app_data_dir
-        .clone();
-    if enabled {
-        retro_native::enable_retroarch_achievements(&app_data_dir, &username, &password, hardcore)
-    } else {
-        retro_native::disable_retroarch_achievements(&app_data_dir)
-    }
-}
-
-/// PCSX2's counterpart to `apply_retroarch_achievements` above — same
-/// "never store the password, only relay it once" contract, except PCSX2
-/// has no config field that performs its own login on next launch the way
-/// RetroArch's does, so Wervik performs the one-time RetroAchievements
-/// login itself and writes the resulting session token straight into
-/// PCSX2's own `secrets.ini` (see `retro::native::enable_pcsx2_achievements`).
-#[tauri::command(async)]
-pub fn apply_pcsx2_achievements(
-    state: State<AppStateHandle>,
-    enabled: bool,
-    username: String,
-    password: String,
-    hardcore: bool,
-) -> Result<(), String> {
-    let app_data_dir = state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .app_data_dir
-        .clone();
-    if enabled {
-        retro_native::enable_pcsx2_achievements(&app_data_dir, &username, &password, hardcore)
-    } else {
-        retro_native::disable_pcsx2_achievements(&app_data_dir)
-    }
-}
-
 #[tauri::command(async)]
 pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1975,13 +1931,43 @@ pub fn launch_retro_game(
         let game_setup_dir = state.game_setup_dir.clone();
         let app_handle = state.app_handle.clone();
         let platform_key = rom.platform.key().to_string();
+        let settings = state.store.settings();
+        let maximize_window = settings.maximize_games;
+        let hardcore_mode = state.store.is_retro_hardcore(&id);
+        let ra_username = settings.ra_username;
+        let ra_password = settings.ra_password;
         let is_retroarch = emulator.id.starts_with("retroarch-");
+        let is_pcsx2 = emulator.id == "pcsx2";
         let account_token = state
             .store
             .wervik_account()
             .map(|account| account.access_token)
             .filter(|token| !token.trim().is_empty());
         drop(state);
+
+        let achievement_config = if is_retroarch {
+            retro_native::configure_retroarch_achievements(
+                &app_data_dir,
+                &ra_username,
+                &ra_password,
+                hardcore_mode,
+            )
+        } else if is_pcsx2 {
+            retro_native::configure_pcsx2_achievements(
+                &app_data_dir,
+                &ra_username,
+                &ra_password,
+                hardcore_mode,
+            )
+        } else {
+            Ok(())
+        };
+        if let Err(error) = achievement_config {
+            if let Some(dir) = &cleanup_dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            return Err(error);
+        }
 
         if is_retroarch {
             if let Some(token) = account_token {
@@ -2001,6 +1987,7 @@ pub fn launch_retro_game(
             &native_rom_path,
             &game_setup_dir,
             &platform_key,
+            maximize_window,
         ) {
             Ok(child) => child,
             Err(error) => {
@@ -2010,6 +1997,9 @@ pub fn launch_retro_game(
                 return Err(error);
             }
         };
+        if maximize_window {
+            window::spawn_maximizer(child.id());
+        }
         std::thread::spawn(move || {
             let mut child = child;
             let _ = child.wait();
@@ -2510,6 +2500,23 @@ pub fn set_game_reaction(
     let app_handle = state.app_handle.clone();
     drop(state);
     schedule_wervik_cloud_sync(&app_handle);
+    Ok(())
+}
+
+/// Stores RetroAchievements Hardcore mode for one retro game. The setting is
+/// applied to the selected emulator immediately before that game's launch,
+/// so another retro game can keep normal mode.
+#[tauri::command(async)]
+pub fn set_retro_hardcore_mode(
+    state: State<AppStateHandle>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.rom_games.iter().any(|game| game.id == id) {
+        return Err("This retro game could not be found.".into());
+    }
+    state.store.set_retro_hardcore(&id, enabled);
     Ok(())
 }
 
@@ -3367,8 +3374,9 @@ pub fn set_settings(
     let metadata_provider_changed = previous.metadata_provider != settings.metadata_provider;
     let credentials_changed = previous.igdb_client_id != settings.igdb_client_id
         || previous.igdb_client_secret != settings.igdb_client_secret;
-    let ra_credentials_changed =
-        previous.ra_username != settings.ra_username || previous.ra_api_key != settings.ra_api_key;
+    let ra_credentials_changed = previous.ra_username != settings.ra_username
+        || previous.ra_api_key != settings.ra_api_key
+        || previous.ra_password != settings.ra_password;
     let steam_credentials_changed = previous.steam_api_key != settings.steam_api_key
         || previous.steam_id64_override != settings.steam_id64_override;
     let account = state.store.wervik_account();

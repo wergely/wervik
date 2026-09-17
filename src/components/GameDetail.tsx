@@ -30,6 +30,7 @@ import { BiosControl } from "./BiosControl";
 import { OverflowMenu } from "./OverflowMenu";
 import { SourceBadge } from "./SourceBadge";
 import { Spinner } from "./Spinner";
+import { Switch } from "./Switch";
 import styles from "./GameDetail.module.css";
 
 interface GameDetailProps {
@@ -38,6 +39,7 @@ interface GameDetailProps {
   onPlay: (game: Game, variantId?: string | null) => Promise<void>;
   onToggleFavorite: (id: string) => void;
   onSetReaction: (id: string, reaction: GameReaction | null) => void;
+  onSetHardcoreMode: (id: string, enabled: boolean) => void;
   registerBackHandler: (handler: (() => void) | null) => void;
   registerNavScope: (el: HTMLElement | null) => void;
   /** Whether this exact game currently has a tracked play session running
@@ -116,7 +118,15 @@ function fromSteam(data: SteamGameAchievements): DisplayAchievements {
 function activeFeatures(game: Game): string[] {
   const features: string[] = [];
   if (game.nativeEmulator) features.push(`Native: ${game.nativeEmulator}`);
+  if (supportsHardcoreMode(game) && game.hardcoreMode) features.push("Hardcore mode");
   return features;
+}
+
+function supportsHardcoreMode(game: Game): boolean {
+  return (
+    game.source === "retro" &&
+    (game.nativeEmulator?.startsWith("RetroArch ·") === true || game.nativeEmulator === "PCSX2")
+  );
 }
 
 function releaseYear(metadata: GameMetadata): string | null {
@@ -182,6 +192,7 @@ export function GameDetail({
   onPlay,
   onToggleFavorite,
   onSetReaction,
+  onSetHardcoreMode,
   registerBackHandler,
   registerNavScope,
   isPlaying,
@@ -552,6 +563,23 @@ export function GameDetail({
 
           {game.source === "retro" && game.requiresBios && game.platformKey && (
             <BiosControl platformKey={game.platformKey} platformName={game.platform ?? "This platform"} />
+          )}
+
+          {supportsHardcoreMode(game) && (
+            <div className={styles.hardcoreControl}>
+              <div>
+                <div className={styles.hardcoreLabel}>Hardcore mode</div>
+                <div className={styles.hardcoreDescription}>
+                  Disables save states, rewind and cheats for this game. Applies on the next launch.
+                </div>
+              </div>
+              <Switch
+                checked={game.hardcoreMode}
+                onChange={(enabled) => onSetHardcoreMode(game.id, enabled)}
+                label={`Hardcore mode for ${game.name}`}
+                disabled={isPlaying}
+              />
+            </div>
           )}
 
           {launchError && <p className={styles.launchError}>{launchError}</p>}

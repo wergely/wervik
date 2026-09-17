@@ -51,6 +51,8 @@ export interface Game {
    * the relevant credentials aren't configured, or before a match/result
    * is cached yet. */
   achievementCompletionPercent: number | null;
+  /** Whether this retro game launches with RetroAchievements Hardcore mode. */
+  hardcoreMode: boolean;
 }
 
 export interface GameVariant {
@@ -181,6 +183,8 @@ export interface LibrarySnapshot {
 
 export interface Settings {
   fullscreen: boolean;
+  /** Ask supported game windows to open maximized without entering fullscreen. */
+  maximizeGames: boolean;
   launchOnStartup: boolean;
   uiScale: number;
   metadataProvider: MetadataProvider;
@@ -210,12 +214,11 @@ export interface Settings {
    * `metadata::credentials`, which prefers these when both are set. */
   igdbClientId: string;
   igdbClientSecret: string;
-  /** RetroAchievements username and Web API key (from the site's own
-   * "Keys" control panel page) for the read-only achievements viewer.
-   * Unrelated to the account password used to enable real achievements in
-   * RetroArch — that's never persisted here. */
+  /** RetroAchievements credentials. The password is also used by managed
+   * emulators for real-time achievements and is persisted with the settings. */
   raUsername: string;
   raApiKey: string;
+  raPassword: string;
   /** Steam Web API key (from steamcommunity.com/dev/apikey) for the same
    * kind of read-only achievements viewer, but for Steam games — matched
    * by the exact Steam app id, no fuzzy title guess needed. The account's

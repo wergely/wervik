@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   addRomDirectory,
-  applyRetroArchAchievements,
-  applyPcsx2Achievements,
   getPlatformStatus,
   getRomDirectories,
   refreshAllMetadata,
@@ -317,12 +315,8 @@ function WervikAccountFields({ onNavigate }: { onNavigate: (category: Category) 
   );
 }
 
-/** Two unrelated things live here: the read-only achievements viewer
- * (persisted username + Web API key, like `IgdbFields` above) and a
- * fire-and-forget action that points RetroArch's own live achievements
- * engine at the user's account for the platforms Wervik launches through
- * it. The RetroArch password is local-only state — it's never part of
- * `settings` and is cleared right after being sent. */
+/** The shared RetroAchievements credentials used by both the read-only
+ * viewer and the managed emulators' live achievements engine. */
 function RetroAchievementsFields({
   settings,
   onUpdateSettings,
@@ -332,26 +326,36 @@ function RetroAchievementsFields({
 }) {
   const [username, setUsername] = useState(settings?.raUsername ?? "");
   const [apiKey, setApiKey] = useState(settings?.raApiKey ?? "");
+  const [password, setPassword] = useState(settings?.raPassword ?? "");
   const [revealApiKey, setRevealApiKey] = useState(false);
+  const [revealPassword, setRevealPassword] = useState(false);
 
   useEffect(() => {
     setUsername(settings?.raUsername ?? "");
     setApiKey(settings?.raApiKey ?? "");
-  }, [settings?.raUsername, settings?.raApiKey]);
+    setPassword(settings?.raPassword ?? "");
+  }, [settings?.raUsername, settings?.raApiKey, settings?.raPassword]);
 
-  const dirty = username.trim() !== (settings?.raUsername ?? "") || apiKey.trim() !== (settings?.raApiKey ?? "");
+  const dirty =
+    username.trim() !== (settings?.raUsername ?? "") ||
+    apiKey.trim() !== (settings?.raApiKey ?? "") ||
+    password !== (settings?.raPassword ?? "");
   const configured = !!settings?.raUsername && !!settings?.raApiKey;
+  const liveConfigured = !!settings?.raUsername && !!settings?.raPassword;
 
   function save() {
-    onUpdateSettings({ raUsername: username.trim(), raApiKey: apiKey.trim() });
+    onUpdateSettings({
+      raUsername: username.trim(),
+      raApiKey: apiKey.trim(),
+      raPassword: password,
+    });
   }
 
   return (
     <>
       <p className={styles.groupDescription}>
-        Optional. Shows earned and locked achievements (with points) on a retro game's page, matched by title
-        against RetroAchievements — not by ROM hash, so an unusual release may not match. Get a Web API key from
-        your{" "}
+        Optional. Configure your RetroAchievements account once for the viewer and for real-time achievements in
+        managed RetroArch/PCSX2 games. The game page controls Hardcore mode per game. Get a Web API key from your{" "}
         <a href="https://retroachievements.org/settings" target="_blank" rel="noreferrer">
           RetroAchievements control panel
         </a>{" "}
@@ -374,7 +378,7 @@ function RetroAchievementsFields({
         <div>
           <div className={styles.rowLabel}>Web API Key</div>
           <div className={styles.rowDescription}>
-            Stored locally — only ever sent to RetroAchievements' own API.
+            Used for the read-only achievements viewer.
           </div>
         </div>
         <div className={styles.secretField}>
@@ -401,148 +405,45 @@ function RetroAchievementsFields({
       </div>
       <div className={styles.row}>
         <div>
+          <div className={styles.rowLabel}>Password</div>
+          <div className={styles.rowDescription}>
+            Saved with your settings and used to sign in managed emulators for real-time achievements.
+          </div>
+        </div>
+        <div className={styles.secretField}>
+          <input
+            className={styles.textInput}
+            type={revealPassword ? "text" : "password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            spellCheck={false}
+            data-nav-item
+          />
+          <button
+            type="button"
+            className={styles.revealButton}
+            data-nav-item
+            onClick={() => setRevealPassword((v) => !v)}
+            aria-label={revealPassword ? "Hide password" : "Show password"}
+            title={revealPassword ? "Hide password" : "Show password"}
+          >
+            {revealPassword ? "🙈" : "👁"}
+          </button>
+        </div>
+      </div>
+      <div className={styles.row}>
+        <div>
           <div className={styles.rowLabel}>Status</div>
           <div className={styles.rowDescription}>
-            {configured
-              ? "Configured — achievements appear on a retro game's page when matched."
+            {configured || liveConfigured
+              ? `${configured ? "Viewer configured" : "Live credentials saved"}${configured && liveConfigured ? " · live credentials saved for managed emulators" : ""}.`
               : "Not configured — Wervik works fine without it."}
           </div>
         </div>
         <button type="button" className={styles.rescanButton} data-nav-item onClick={save} disabled={!dirty}>
           Save
         </button>
-      </div>
-
-      <NativeAchievementsSection
-        title="Real achievements in RetroArch"
-        description="Games launched through Wervik's own managed RetroArch use its real RetroAchievements engine — unlock popups and hardcore mode included, unlike the viewer above. This sends your login straight into RetroArch's own config; Wervik never stores the password itself, and RetroArch replaces it with a session token as soon as it signs in."
-        username={username}
-        apply={applyRetroArchAchievements}
-      />
-      {!IS_MACOS && (
-        <NativeAchievementsSection
-          title="Real achievements in PCSX2"
-          description="PlayStation 2 games launch through Wervik's own managed PCSX2, which has the same real RetroAchievements engine. Unlike RetroArch, PCSX2 has no config field that logs itself in — Wervik performs that one-time login instead, and stores only the resulting session token (never your password) in PCSX2's own config."
-          username={username}
-          apply={applyPcsx2Achievements}
-        />
-      )}
-    </>
-  );
-}
-
-/** The "sign in to a managed native emulator's own RetroAchievements
- * engine" block — identical flow for RetroArch and PCSX2, just pointed at
- * a different Tauri command (see `apply`), so shared here instead of
- * duplicated per emulator. `username` is the one already entered above (in
- * the read-only viewer's own fields), since it's the same RetroAchievements
- * account either way. */
-function NativeAchievementsSection({
-  title,
-  description,
-  username,
-  apply,
-}: {
-  title: string;
-  description: string;
-  username: string;
-  apply: (enabled: boolean, username: string, password: string, hardcore: boolean) => Promise<void>;
-}) {
-  const [password, setPassword] = useState("");
-  const [hardcore, setHardcore] = useState(false);
-  const [busy, setBusy] = useState<"enable" | "disable" | null>(null);
-  const [message, setMessage] = useState<{ error: boolean; text: string } | null>(null);
-
-  async function handleEnable() {
-    if (!username.trim() || !password.trim()) {
-      setMessage({ error: true, text: "Enter your username above and a password first." });
-      return;
-    }
-    setBusy("enable");
-    setMessage(null);
-    try {
-      await apply(true, username.trim(), password, hardcore);
-      setMessage({ error: false, text: "Enabled — it will sign in the next time it launches." });
-      setPassword("");
-    } catch (error) {
-      setMessage({ error: true, text: String(error) });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleDisable() {
-    setBusy("disable");
-    setMessage(null);
-    try {
-      await apply(false, "", "", false);
-      setMessage({ error: false, text: "Disabled." });
-    } catch (error) {
-      setMessage({ error: true, text: String(error) });
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <>
-      <p className={styles.groupTitle} style={{ marginTop: 28 }}>
-        {title}
-      </p>
-      <p className={styles.groupDescription}>{description}</p>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Password</div>
-          <div className={styles.rowDescription}>Your RetroAchievements account password — not the Web API key above.</div>
-        </div>
-        <input
-          className={styles.textInput}
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          spellCheck={false}
-          data-nav-item
-        />
-      </div>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Hardcore mode</div>
-          <div className={styles.rowDescription}>
-            Disables save states, rewind and cheats while playing — some achievements require it.
-          </div>
-        </div>
-        <Switch checked={hardcore} onChange={setHardcore} label="Hardcore mode" />
-      </div>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Apply</div>
-          {message && (
-            <div className={message.error ? styles.statusMessageError : styles.statusMessage}>{message.text}</div>
-          )}
-        </div>
-        <div className={styles.nativeActions}>
-          <button
-            type="button"
-            className={styles.rescanButton}
-            data-nav-item
-            onClick={handleEnable}
-            disabled={busy !== null}
-          >
-            {busy === "enable" && <Spinner />}
-            {busy === "enable" ? "Enabling…" : "Enable"}
-          </button>
-          <button
-            type="button"
-            className={styles.romRemoveButton}
-            data-nav-item
-            onClick={handleDisable}
-            disabled={busy !== null}
-          >
-            {busy === "disable" && <Spinner />}
-            {busy === "disable" ? "Disabling…" : "Disable"}
-          </button>
-        </div>
       </div>
     </>
   );
@@ -1011,6 +912,21 @@ export function Settings({
                   label="Launch in fullscreen"
                 />
               </div>
+              {!IS_MACOS && (
+                <div className={styles.row}>
+                  <div>
+                    <div className={styles.rowLabel}>Launch games maximized</div>
+                    <div className={styles.rowDescription}>
+                      Open supported game windows maximized without using fullscreen mode.
+                    </div>
+                  </div>
+                  <Switch
+                    checked={!!settings?.maximizeGames}
+                    onChange={(v) => onUpdateSettings({ maximizeGames: v })}
+                    label="Launch games maximized"
+                  />
+                </div>
+              )}
               <div className={styles.row}>
                 <div>
                   <div className={styles.rowLabel}>Launch on system startup</div>

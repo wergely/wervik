@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getLibrary, launchGame, rescanLibrary, setFavorite, setGameReaction } from "../api/tauri";
+import {
+  getLibrary,
+  launchGame,
+  rescanLibrary,
+  setFavorite,
+  setGameReaction,
+  setRetroHardcoreMode,
+} from "../api/tauri";
 import type { Game, GameReaction, LibrarySnapshot } from "../types";
 
 export type LibraryStatus = "loading" | "ready" | "error";
@@ -90,6 +97,17 @@ export function useLibrary() {
     });
   }, []);
 
+  const updateHardcoreMode = useCallback((id: string, enabled: boolean) => {
+    setSnapshot((prev) => {
+      if (!prev) return prev;
+      setRetroHardcoreMode(id, enabled).catch(() => {});
+      return {
+        ...prev,
+        games: prev.games.map((game): Game => (game.id === id ? { ...game, hardcoreMode: enabled } : game)),
+      };
+    });
+  }, []);
+
   const play = useCallback((appId: number) => {
     return launchGame(appId);
   }, []);
@@ -101,6 +119,7 @@ export function useLibrary() {
     rescan,
     toggleFavorite,
     updateReaction,
+    updateHardcoreMode,
     play,
     applySnapshot: setSnapshot,
   };

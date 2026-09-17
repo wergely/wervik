@@ -78,31 +78,6 @@ export function getRaProfileSummary(): Promise<RaProfileSummary | null> {
   return invoke("get_ra_profile_summary");
 }
 
-/** Enables (or disables) RetroArch's own live RetroAchievements engine for
- * the platforms launched through Wervik's managed RetroArch. `password` is
- * relayed into RetroArch's own config and never
- * stored by Wervik — pass an empty string when `enabled` is false. */
-export function applyRetroArchAchievements(
-  enabled: boolean,
-  username: string,
-  password: string,
-  hardcore: boolean,
-): Promise<void> {
-  return invoke("apply_retroarch_achievements", { enabled, username, password, hardcore });
-}
-
-/** PCSX2's counterpart to `applyRetroArchAchievements` above — same
- * never-store-the-password contract, for PlayStation 2 games launched
- * through Wervik's managed PCSX2. */
-export function applyPcsx2Achievements(
-  enabled: boolean,
-  username: string,
-  password: string,
-  hardcore: boolean,
-): Promise<void> {
-  return invoke("apply_pcsx2_achievements", { enabled, username, password, hardcore });
-}
-
 export function rescanLibrary(): Promise<LibrarySnapshot> {
   return invoke("rescan_library");
 }
@@ -162,6 +137,11 @@ export function setFavorite(id: string, favorite: boolean): Promise<void> {
 
 export function setGameReaction(id: string, reaction: GameReaction | null): Promise<void> {
   return invoke("set_game_reaction", { id, reaction });
+}
+
+/** Stores Hardcore mode for this individual retro game. */
+export function setRetroHardcoreMode(id: string, enabled: boolean): Promise<void> {
+  return invoke("set_retro_hardcore_mode", { id, enabled });
 }
 
 export function getSettings(): Promise<Settings> {

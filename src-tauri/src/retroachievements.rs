@@ -13,8 +13,8 @@
 //!
 //! Live achievement *unlocking* (popups, hardcore mode, memory-address
 //! triggers) is a different, unrelated integration — see
-//! `retro::native::enable_retroarch_achievements` and
-//! `retro::native::enable_pcsx2_achievements`, which each point a managed
+//! `retro::native::configure_retroarch_achievements` and
+//! `retro::native::configure_pcsx2_achievements`, which each point a managed
 //! native emulator's own cheevos engine at the user's account. This module
 //! doesn't drive either engine itself, but does own [`login`], the one
 //! write-shaped call both of them need first (trading a password for a

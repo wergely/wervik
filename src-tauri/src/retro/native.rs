@@ -70,7 +70,9 @@ pub struct NativeEmulator {
     /// Geo CD mode, which needs a fixed system name *before* the disc
     /// path: `["neocdz", "-cd", "{rom}", "-fullscreen"]`. Verified against
     /// each emulator's own `--help`/source — never assumed to match
-    /// another emulator's argument style or order.
+    /// another emulator's argument style or order. When Wervik's
+    /// maximized-window mode is enabled, its launcher-specific fullscreen
+    /// flag is removed or replaced with the corresponding windowed flag.
     launch_args: &'static [&'static str],
     /// Arguments to open this emulator's own settings/config UI with no
     /// ROM loaded (see `open_settings`). Empty for gopher64 and DuckStation,
@@ -778,7 +780,9 @@ fn set_ini_option(path: &Path, section: &str, key: &str, value: &str) -> Result<
         }
         if in_target_section
             && !trimmed.starts_with(';')
-            && trimmed.split_once('=').is_some_and(|(left, _)| left.trim() == key)
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(left, _)| left.trim() == key)
         {
             output.push_str(key);
             output.push_str(" = ");
@@ -813,6 +817,30 @@ fn set_ini_option(path: &Path, section: &str, key: &str, value: &str) -> Result<
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     std::fs::write(path, output).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn ini_option(path: &Path, section: &str, key: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let mut in_target_section = false;
+    for raw_line in contents.lines() {
+        let trimmed = raw_line.trim();
+        if let Some(name) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_target_section = name == section;
+            continue;
+        }
+        if in_target_section
+            && !trimmed.starts_with(';')
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(left, _)| left.trim() == key)
+        {
+            return trimmed
+                .split_once('=')
+                .map(|(_, value)| value.trim().trim_matches('"').to_string());
+        }
+    }
+    None
 }
 
 /// The managed RetroArch copy must remain at normal content speed on Windows
@@ -929,13 +957,10 @@ fn retroarch_config_path(app_data_dir: &Path) -> Result<PathBuf, String> {
     Ok(retroarch_runtime_dir(app_data_dir).join("retroarch.cfg"))
 }
 
-/// Points the managed RetroArch install's own RetroAchievements engine
-/// (real-time unlock popups, hardcore mode) at `username`. RetroArch
-/// exchanges `password` for a session token and overwrites its own config
-/// with that token on next successful login — Wervik never stores this
-/// password itself, only relays it into RetroArch's config this once.
+/// Applies the shared account credentials and the current game's Hardcore
+/// choice to the managed RetroArch config immediately before launch.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-pub fn enable_retroarch_achievements(
+pub fn configure_retroarch_achievements(
     app_data_dir: &Path,
     username: &str,
     password: &str,
@@ -944,9 +969,11 @@ pub fn enable_retroarch_achievements(
     let config_path = retroarch_config_path(app_data_dir)?;
     #[cfg(target_os = "macos")]
     ensure_retroarch_macos_config(app_data_dir)?;
-    set_retroarch_option(&config_path, "cheevos_enable", "true")?;
-    set_retroarch_option(&config_path, "cheevos_username", username)?;
-    set_retroarch_option(&config_path, "cheevos_password", password)?;
+    if !username.trim().is_empty() && !password.trim().is_empty() {
+        set_retroarch_option(&config_path, "cheevos_enable", "true")?;
+        set_retroarch_option(&config_path, "cheevos_username", username)?;
+        set_retroarch_option(&config_path, "cheevos_password", password)?;
+    }
     set_retroarch_option(
         &config_path,
         "cheevos_hardcore_mode_enable",
@@ -954,27 +981,14 @@ pub fn enable_retroarch_achievements(
     )
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-pub fn disable_retroarch_achievements(app_data_dir: &Path) -> Result<(), String> {
-    let config_path = retroarch_config_path(app_data_dir)?;
-    #[cfg(target_os = "macos")]
-    ensure_retroarch_macos_config(app_data_dir)?;
-    set_retroarch_option(&config_path, "cheevos_enable", "false")
-}
-
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn enable_retroarch_achievements(
+pub fn configure_retroarch_achievements(
     _app_data_dir: &Path,
     _username: &str,
     _password: &str,
     _hardcore: bool,
 ) -> Result<(), String> {
-    Err("RetroArch achievements setup is only available on Windows and macOS.".to_string())
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn disable_retroarch_achievements(_app_data_dir: &Path) -> Result<(), String> {
-    Err("RetroArch achievements setup is only available on Windows and macOS.".to_string())
+    Ok(())
 }
 
 /// Where PCSX2 (in portable mode) keeps its own settings — `bios/`'s own
@@ -1006,64 +1020,66 @@ fn write_pcsx2_first_run_config(app_data_dir: &Path) -> Result<(), String> {
     set_ini_option(&ini_path, "UI", "SetupWizardIncomplete", "false")
 }
 
-/// Points PCSX2's own RetroAchievements engine (real unlock popups, hardcore
-/// mode) at `username` — unlike RetroArch's `cheevos_password` config field
-/// (see `enable_retroarch_achievements`), PCSX2 has no equivalent "hand me
-/// a password and log in yourself on next launch" option, so Wervik performs
-/// the same one-time login RetroAchievements' account exchange itself (see
-/// `retroachievements::login`) and writes only the resulting session token
-/// — never the password — into PCSX2's own `secrets.ini`, the same file its
-/// own login flow writes it to (verified against the real `Achievements.cpp`
-/// login callback).
+/// Applies the saved account and this game's Hardcore choice to PCSX2. The
+/// account exchange is repeated only when PCSX2 has no matching live session;
+/// PCSX2 receives the resulting token, never the account password.
 #[cfg(target_os = "windows")]
-pub fn enable_pcsx2_achievements(
+pub fn configure_pcsx2_achievements(
     app_data_dir: &Path,
     username: &str,
     password: &str,
     hardcore: bool,
 ) -> Result<(), String> {
-    let token = crate::retroachievements::login(username, password)?;
-    let inis_dir = pcsx2_settings_dir(app_data_dir)
-        .ok_or_else(|| "Install PCSX2 first (in Platforms) before signing in.".to_string())?;
+    let inis_dir = pcsx2_settings_dir(app_data_dir).ok_or_else(|| {
+        "Install PCSX2 first (in Platforms) before launching this game.".to_string()
+    })?;
     let ini_path = inis_dir.join("PCSX2.ini");
     let secrets_path = inis_dir.join("secrets.ini");
 
-    set_ini_option(&ini_path, "Achievements", "Enabled", "true")?;
+    let has_account = !username.trim().is_empty() && !password.trim().is_empty();
+    let has_live_session = ini_option(&ini_path, "Achievements", "Username")
+        .is_some_and(|value| value == username)
+        && ini_option(&ini_path, "Achievements", "Enabled").is_some_and(|value| value == "true")
+        && ini_option(&secrets_path, "Achievements", "Token")
+            .is_some_and(|value| !value.trim().is_empty());
+
+    if has_account {
+        if !has_live_session {
+            let token = crate::retroachievements::login(username, password)?;
+            set_ini_option(&ini_path, "Achievements", "Enabled", "true")?;
+            set_ini_option(&ini_path, "Achievements", "Username", username)?;
+            let login_timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs().to_string())
+                .unwrap_or_else(|_| "0".to_string());
+            set_ini_option(
+                &ini_path,
+                "Achievements",
+                "LoginTimestamp",
+                &login_timestamp,
+            )?;
+            set_ini_option(&secrets_path, "Achievements", "Token", &token)?;
+        } else {
+            set_ini_option(&ini_path, "Achievements", "Enabled", "true")?;
+        }
+    }
     set_ini_option(
         &ini_path,
         "Achievements",
         "ChallengeMode",
         if hardcore { "true" } else { "false" },
-    )?;
-    set_ini_option(&ini_path, "Achievements", "Username", username)?;
-    let login_timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string());
-    set_ini_option(&ini_path, "Achievements", "LoginTimestamp", &login_timestamp)?;
-    set_ini_option(&secrets_path, "Achievements", "Token", &token)
-}
-
-#[cfg(target_os = "windows")]
-pub fn disable_pcsx2_achievements(app_data_dir: &Path) -> Result<(), String> {
-    let inis_dir = pcsx2_settings_dir(app_data_dir)
-        .ok_or_else(|| "Install PCSX2 first (in Platforms) before changing this.".to_string())?;
-    set_ini_option(&inis_dir.join("PCSX2.ini"), "Achievements", "Enabled", "false")
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn enable_pcsx2_achievements(
-    _app_data_dir: &Path,
-    _username: &str,
-    _password: &str,
-    _hardcore: bool,
+pub fn configure_pcsx2_achievements(
+    app_data_dir: &Path,
+    username: &str,
+    password: &str,
+    hardcore: bool,
 ) -> Result<(), String> {
-    Err("PCSX2 achievements setup is only available on Windows.".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn disable_pcsx2_achievements(_app_data_dir: &Path) -> Result<(), String> {
-    Err("PCSX2 achievements setup is only available on Windows.".to_string())
+    let _ = (app_data_dir, username, password, hardcore);
+    Ok(())
 }
 
 /// Whether `platform`'s native RetroArch core can meaningfully render
@@ -1816,6 +1832,7 @@ pub fn spawn(
     rom_path: &Path,
     setup_dir: &Path,
     platform_key: &str,
+    maximize_window: bool,
 ) -> Result<Child, String> {
     #[cfg(target_os = "windows")]
     {
@@ -1829,7 +1846,14 @@ pub fn spawn(
         ensure_retroarch_macos_config(app_data_dir)?;
     }
 
-    let argv = build_argv(app_data_dir, emulator, rom_path, setup_dir, platform_key);
+    let argv = build_argv(
+        app_data_dir,
+        emulator,
+        rom_path,
+        setup_dir,
+        platform_key,
+        maximize_window,
+    );
 
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
@@ -1861,23 +1885,30 @@ fn build_argv(
     rom_path: &Path,
     setup_dir: &Path,
     platform_key: &str,
+    maximize_window: bool,
 ) -> Vec<String> {
     #[cfg(target_os = "windows")]
     let _ = (setup_dir, platform_key);
 
     let rom_path = rom_path.to_string_lossy();
     let mut argv = vec![emulator_path(app_data_dir, &emulator)];
-    argv.extend(emulator.launch_args.iter().map(|arg| {
-        if *arg == "{rom}" {
-            rom_path.to_string()
-        } else if *arg == "{core}" {
-            managed_core_path(app_data_dir, emulator.id)
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default()
-        } else {
-            arg.to_string()
-        }
-    }));
+    argv.extend(
+        emulator
+            .launch_args
+            .iter()
+            .filter_map(|arg| windowed_launch_arg(emulator.id, arg, maximize_window))
+            .map(|arg| {
+                if arg == "{rom}" {
+                    rom_path.to_string()
+                } else if arg == "{core}" {
+                    managed_core_path(app_data_dir, emulator.id)
+                        .map(|path| path.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    arg.to_string()
+                }
+            }),
+    );
 
     #[cfg(target_os = "macos")]
     if is_retroarch_based(emulator.id) {
@@ -1915,6 +1946,47 @@ fn build_argv(
     }
 
     argv
+}
+
+/// Keeps the emulator-specific argument spelling in one place. There is no
+/// reliable generic `--windowed` switch: DuckStation and FBNeo use different
+/// names, while Cemu and gopher64 simply default to windowed when fullscreen
+/// is not requested.
+fn windowed_launch_arg(emulator_id: &str, arg: &str, maximize_window: bool) -> Option<&str> {
+    if !maximize_window {
+        return Some(arg);
+    }
+    match (emulator_id, arg) {
+        ("duckstation", "-fullscreen") => Some("-nofullscreen"),
+        ("fbneo", "-fullscreen") => Some("-w"),
+        ("gopher64", "--fullscreen") | ("cemu", "-f") | ("pcsx2", "-fullscreen") => None,
+        _ => Some(arg),
+    }
+}
+
+#[cfg(test)]
+mod window_mode_tests {
+    use super::windowed_launch_arg;
+
+    #[test]
+    fn launcher_specific_fullscreen_flags_become_windowed() {
+        assert_eq!(windowed_launch_arg("gopher64", "--fullscreen", true), None);
+        assert_eq!(
+            windowed_launch_arg("duckstation", "-fullscreen", true),
+            Some("-nofullscreen")
+        );
+        assert_eq!(windowed_launch_arg("fbneo", "-fullscreen", true), Some("-w"));
+        assert_eq!(windowed_launch_arg("cemu", "-f", true), None);
+        assert_eq!(windowed_launch_arg("pcsx2", "-fullscreen", true), None);
+    }
+
+    #[test]
+    fn fullscreen_arguments_are_unchanged_when_maximization_is_off() {
+        assert_eq!(
+            windowed_launch_arg("duckstation", "-fullscreen", false),
+            Some("-fullscreen")
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -2091,6 +2163,7 @@ mod tests {
             Path::new("/roms/game.z64"),
             &dir,
             "test-platform",
+            false,
         );
 
         assert_eq!(
@@ -2113,6 +2186,7 @@ mod tests {
             Path::new("/roms/game.z64"),
             &dir,
             "nintendo_64",
+            false,
         );
 
         assert_eq!(
@@ -2145,6 +2219,7 @@ mod tests {
             Path::new("/roms/game.cue"),
             &dir,
             "play_station",
+            false,
         );
 
         assert_eq!(
@@ -2173,7 +2248,14 @@ mod tests {
             .next()
             .unwrap();
 
-        let argv = build_argv(&dir, fbneo, Path::new("/roms/game.cue"), &dir, "neo_geo_cd");
+        let argv = build_argv(
+            &dir,
+            fbneo,
+            Path::new("/roms/game.cue"),
+            &dir,
+            "neo_geo_cd",
+            false,
+        );
 
         assert_eq!(
             argv,
@@ -2321,6 +2403,7 @@ mod tests {
             Path::new("/roms/game.z64"),
             &dir,
             key,
+            false,
         );
 
         assert_eq!(
@@ -2595,6 +2678,7 @@ mod windows_tests {
             Path::new(r"D:\Games\Metal Slug.cue"),
             app_data_dir,
             "neo_geo_cd",
+            false,
         );
         assert_eq!(
             argv[0],
@@ -2621,6 +2705,7 @@ mod windows_tests {
             Path::new(r"D:\Games\Super Mario 64.z64"),
             app_data_dir,
             "nintendo_64",
+            false,
         );
         assert_eq!(argv[1], "-L");
         assert_eq!(argv[2], core.to_string_lossy());
@@ -2646,6 +2731,7 @@ mod windows_tests {
             Path::new(r"D:\Games\Some Game.iso"),
             app_data_dir,
             "play_station_2",
+            false,
         );
         assert_eq!(argv[0], executable.to_string_lossy());
         assert_eq!(&argv[1..], &["-portable", "-batch", "-fullscreen", r"D:\Games\Some Game.iso"]);
@@ -2670,6 +2756,7 @@ mod windows_tests {
             Path::new(r"D:\Games\Some Game\code\game.rpx"),
             app_data_dir,
             "wii_u",
+            false,
         );
         assert_eq!(argv[0], executable.to_string_lossy());
         assert_eq!(&argv[1..], &["-g", r"D:\Games\Some Game\code\game.rpx", "-f"]);
@@ -2892,6 +2979,7 @@ mod macos_tests {
             Path::new("/Users/tester/ROMs/Super Mario 64.z64"),
             app_data_dir,
             "nintendo_64",
+            false,
         );
         assert_eq!(argv[0], executable.to_string_lossy());
         assert_eq!(argv[1], "--config");

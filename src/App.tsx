@@ -26,7 +26,17 @@ import { playConfirmSound, playSelectSound } from "./utils/sfx";
 type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements";
 
 export default function App() {
-  const { status, snapshot, rescanning, rescan, toggleFavorite, updateReaction, play, applySnapshot } = useLibrary();
+  const {
+    status,
+    snapshot,
+    rescanning,
+    rescan,
+    toggleFavorite,
+    updateReaction,
+    updateHardcoreMode,
+    play,
+    applySnapshot,
+  } = useLibrary();
   const { settings, update: updateSettings } = useSettings();
   const [view, setView] = useState<View>("home");
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
@@ -265,6 +275,7 @@ export default function App() {
             onPlay={handlePlay}
             onToggleFavorite={toggleFavorite}
             onSetReaction={updateReaction}
+            onSetHardcoreMode={updateHardcoreMode}
             registerBackHandler={setBackOverride}
             registerNavScope={setNavScope}
             isPlaying={playingGameId === selectedGame.id}

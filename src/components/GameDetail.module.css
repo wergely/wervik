@@ -870,6 +870,29 @@
   margin-left: 2px;
 }
 
+.hardcoreControl {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.hardcoreLabel {
+  font-size: 0.86rem;
+  font-weight: 600;
+}
+
+.hardcoreDescription {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  margin-top: 4px;
+}
+
 .launchError {
   margin-top: 14px;
   color: #ff8080;

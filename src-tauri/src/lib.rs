@@ -12,6 +12,7 @@ mod retroachievements;
 mod steam;
 mod storage;
 mod sysutil;
+mod window;
 mod xbox;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -253,8 +254,6 @@ pub fn run() {
             commands::get_achievements_overview,
             commands::get_ra_profile_summary,
             commands::get_steam_achievements,
-            commands::apply_retroarch_achievements,
-            commands::apply_pcsx2_achievements,
             commands::rescan_library,
             commands::get_artwork_progress,
             commands::get_metadata_progress,
@@ -267,6 +266,7 @@ pub fn run() {
             commands::launch_ea_game,
             commands::set_favorite,
             commands::set_game_reaction,
+            commands::set_retro_hardcore_mode,
             commands::get_settings,
             commands::set_settings,
             commands::get_wervik_account,

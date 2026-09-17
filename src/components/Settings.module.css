@@ -333,18 +333,6 @@
   box-shadow: var(--shadow-focus);
 }
 
-.nativeActions {
-  display: flex;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.statusMessage {
-  color: var(--cyan);
-  font-size: 0.82rem;
-  margin-top: 4px;
-}
-
 .statusMessageError {
   color: #ff8080;
   font-size: 0.82rem;

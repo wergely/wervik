@@ -14,6 +14,7 @@ use sysinfo::{Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::AppStateHandle;
+use crate::window;
 
 const STARTUP_GRACE: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -385,6 +386,15 @@ fn game_process_is_running(system: &System, target: &ProcessTarget) -> bool {
         .any(|process| process_is_in_target(process, target))
 }
 
+fn game_process_ids(system: &System, target: &ProcessTarget) -> Vec<u32> {
+    system
+        .processes()
+        .values()
+        .filter(|process| process_is_in_target(process, target))
+        .map(|process| process.pid().as_u32())
+        .collect()
+}
+
 /// `game_id` is only used to tell the frontend which game's "Playing"
 /// status just ended (see the `playtime-updated` emit below and in
 /// `commands::finish_playtime_session`) — the session itself is tracked by
@@ -394,12 +404,14 @@ pub fn spawn_process_monitor(
     session_id: i64,
     game_id: String,
     target: ProcessTarget,
+    maximize_window: bool,
 ) {
     std::thread::spawn(move || {
         let mut system = System::new();
         let deadline = Instant::now() + STARTUP_GRACE;
         let mut seen_process = false;
         let mut missing_polls = 0u8;
+        let mut window_maximized = !maximize_window;
 
         loop {
             system.refresh_processes_specifics(
@@ -412,6 +424,10 @@ pub fn spawn_process_monitor(
             if running {
                 seen_process = true;
                 missing_polls = 0;
+                if !window_maximized {
+                    window_maximized =
+                        window::maximize_process_windows(&game_process_ids(&system, &target));
+                }
                 if !heartbeat_session(&app_handle, session_id) {
                     return;
                 }
