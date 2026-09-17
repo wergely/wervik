@@ -65,6 +65,9 @@ pub struct AppState {
     pub steam_owned_games_fetch_running: Arc<AtomicBool>,
     pub metadata_fetch_running: Arc<AtomicBool>,
     pub metadata_progress: Arc<metadata::MetadataProgressState>,
+    /// Invalidates an in-flight metadata pass when credentials or the
+    /// selected provider changes, so it cannot keep using a stale token.
+    pub metadata_fetch_generation: Arc<AtomicUsize>,
     pub store: Store,
     pub game_setup_dir: PathBuf,
     pub app_data_dir: PathBuf,
@@ -88,6 +91,8 @@ pub struct AppState {
     /// local cache updates arrive close together.
     pub cloud_sync_running: Arc<AtomicBool>,
     pub cloud_sync_requested: Arc<AtomicBool>,
+    /// Invalidates cloud uploads when the connected account changes.
+    pub wervik_sync_generation: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -177,18 +182,25 @@ impl AppState {
     }
 
     pub(crate) fn start_metadata_fetch_with_force(&self, force: bool) {
+        let generation_id = self
+            .metadata_fetch_generation
+            .fetch_add(1, Ordering::SeqCst)
+            + 1;
         let settings = self.store.settings();
         let wervik_access_token = self
             .store
             .wervik_account()
             .map(|account| account.access_token)
             .filter(|token| !token.trim().is_empty());
+        self.metadata_fetch_running.store(false, Ordering::SeqCst);
         metadata::spawn_fetch(
             self.app_handle.clone(),
             self.app_data_dir.clone(),
             self.metadata_queries(),
             self.metadata_fetch_running.clone(),
             self.metadata_progress.clone(),
+            self.metadata_fetch_generation.clone(),
+            generation_id,
             settings.metadata_provider,
             settings.igdb_client_id,
             settings.igdb_client_secret,
@@ -2973,7 +2985,12 @@ fn post_wervik_sync<T: Serialize>(
 fn sync_wervik_cloud(
     account: &WervikAccount,
     payload: &WervikCloudSyncPayload,
+    generation: &AtomicUsize,
+    generation_id: usize,
 ) -> Result<(), String> {
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return Ok(());
+    }
     let configured_base =
         std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
     let base_url =
@@ -2982,8 +2999,20 @@ fn sync_wervik_cloud(
         .timeout_global(Some(Duration::from_secs(30)))
         .build()
         .into();
-    post_wervik_sync(&agent, &base_url, account, "/api/sync/library", &payload.library)?;
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return Ok(());
+    }
+    post_wervik_sync(
+        &agent,
+        &base_url,
+        account,
+        "/api/sync/library",
+        &payload.library,
+    )?;
     for sessions in payload.playtime.sessions.chunks(1_000) {
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Ok(());
+        }
         post_wervik_sync(
             &agent,
             &base_url,
@@ -2995,6 +3024,9 @@ fn sync_wervik_cloud(
         )?;
     }
     for (index, snapshots) in payload.achievements.snapshots.chunks(50).enumerate() {
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Ok(());
+        }
         post_wervik_sync(
             &agent,
             &base_url,
@@ -3007,6 +3039,9 @@ fn sync_wervik_cloud(
         )?;
     }
     if payload.achievements.snapshots.is_empty() {
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Ok(());
+        }
         post_wervik_sync(
             &agent,
             &base_url,
@@ -3025,7 +3060,7 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
     let Some(state_handle) = app.try_state::<AppStateHandle>() else {
         return;
     };
-    let (running, requested) = {
+    let (running, requested, generation) = {
         let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         let Some(account) = state.store.wervik_account() else {
             return;
@@ -3037,6 +3072,7 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
         (
             state.cloud_sync_running.clone(),
             state.cloud_sync_requested.clone(),
+            state.wervik_sync_generation.clone(),
         )
     };
     if running
@@ -3050,15 +3086,31 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         loop {
             requested.store(false, Ordering::SeqCst);
-            let payload = app.try_state::<AppStateHandle>().and_then(|state_handle| {
-                let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
-                build_wervik_cloud_sync_payload(&state)
-            });
+            let (generation_id, payload) =
+                app.try_state::<AppStateHandle>()
+                    .map_or((0, None), |state_handle| {
+                        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                        (
+                            state.wervik_sync_generation.load(Ordering::SeqCst),
+                            build_wervik_cloud_sync_payload(&state),
+                        )
+                    });
             if let Some((account, payload)) = payload {
-                if let Err(error) = sync_wervik_cloud(&account, &payload) {
+                if let Err(error) =
+                    sync_wervik_cloud(&account, &payload, &generation, generation_id)
+                {
+                    if generation.load(Ordering::SeqCst) != generation_id {
+                        continue;
+                    }
                     eprintln!("Wervik cloud sync failed: {error}");
                     let _ = app.emit(WERVIK_CLOUD_SYNC_ERROR_EVENT, error);
                 }
+            }
+            if generation.load(Ordering::SeqCst) != generation_id {
+                if requested.load(Ordering::SeqCst) {
+                    continue;
+                }
+                break;
             }
             if !requested.load(Ordering::SeqCst) {
                 break;
@@ -3145,15 +3197,12 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         match result {
             Ok(account) => {
                 let mut settings = state.store.settings();
+                state.wervik_sync_generation.fetch_add(1, Ordering::SeqCst);
                 state.store.set_wervik_account(account.clone());
-                // A fresh connection with no IGDB credentials of its own gets
-                // Wervik metadata "for free", matching what Settings promises
-                // before connecting. A deliberately configured IGDB client
-                // stays untouched — connecting an account never overrides it.
-                if settings.metadata_provider == MetadataProvider::Igdb
-                    && (settings.igdb_client_id.trim().is_empty()
-                        || settings.igdb_client_secret.trim().is_empty())
-                {
+                // A connected Wervik Account is the authoritative metadata
+                // provider. Changing it here also invalidates the current
+                // metadata worker, which may still hold the previous token.
+                if settings.metadata_provider != MetadataProvider::Wervik {
                     settings.metadata_provider = MetadataProvider::Wervik;
                     state.store.set_settings(settings.clone());
                 }
@@ -3230,6 +3279,7 @@ pub fn connect_wervik_account(
 pub fn disconnect_wervik_account(state: State<AppStateHandle>) -> Result<(), String> {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = state.store.settings();
+    state.wervik_sync_generation.fetch_add(1, Ordering::SeqCst);
     if settings.metadata_provider == MetadataProvider::Wervik {
         settings.metadata_provider = MetadataProvider::Igdb;
         state.store.set_settings(settings);

@@ -781,6 +781,8 @@ pub fn spawn_fetch(
     games: Vec<MetadataQuery>,
     running: Arc<AtomicBool>,
     progress: Arc<MetadataProgressState>,
+    generation: Arc<AtomicUsize>,
+    generation_id: usize,
     provider: MetadataProvider,
     stored_client_id: String,
     stored_client_secret: String,
@@ -807,7 +809,7 @@ pub fn spawn_fetch(
         {
             progress.done.store(0, Ordering::SeqCst);
             progress.total.store(0, Ordering::SeqCst);
-            running.store(false, Ordering::SeqCst);
+            finish_fetch(&running, &generation, generation_id);
             return;
         }
         let agent = new_agent();
@@ -817,7 +819,7 @@ pub fn spawn_fetch(
                     Ok(token) => Some(token),
                     Err(error) => {
                         eprintln!("IGDB metadata worker authentication failed: {error}");
-                        running.store(false, Ordering::SeqCst);
+                        finish_fetch(&running, &generation, generation_id);
                         return;
                     }
                 }
@@ -835,6 +837,10 @@ pub fn spawn_fetch(
         let _ = app_handle.emit("metadata-progress", MetadataProgress { done: 0, total });
 
         for game in pending {
+            if generation.load(Ordering::SeqCst) != generation_id {
+                break;
+            }
+
             let result = match provider {
                 MetadataProvider::Igdb => {
                     let (client_id, _) = igdb_credentials
@@ -864,6 +870,9 @@ pub fn spawn_fetch(
                     force,
                 ),
             };
+            if generation.load(Ordering::SeqCst) != generation_id {
+                break;
+            }
             match result {
                 Ok(Some(metadata)) => {
                     let mut updated = false;
@@ -893,10 +902,19 @@ pub fn spawn_fetch(
             }
             let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
             let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
+            if generation.load(Ordering::SeqCst) != generation_id {
+                break;
+            }
             std::thread::sleep(IGDB_REQUEST_DELAY);
         }
-        running.store(false, Ordering::SeqCst);
+        finish_fetch(&running, &generation, generation_id);
     });
+}
+
+fn finish_fetch(running: &AtomicBool, generation: &AtomicUsize, generation_id: usize) {
+    if generation.load(Ordering::SeqCst) == generation_id {
+        running.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

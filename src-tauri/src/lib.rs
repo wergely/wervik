@@ -14,7 +14,7 @@ mod storage;
 mod sysutil;
 mod xbox;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
@@ -70,6 +70,7 @@ pub fn run() {
             );
             let metadata_fetch_running = Arc::new(AtomicBool::new(false));
             let metadata_progress = Arc::new(metadata::MetadataProgressState::default());
+            let metadata_fetch_generation = Arc::new(AtomicUsize::new(0));
             let retro_achievements_fetch_running = Arc::new(AtomicBool::new(false));
             let steam_achievements_fetch_running = Arc::new(AtomicBool::new(false));
             let steam_owned_games_fetch_running = Arc::new(AtomicBool::new(false));
@@ -117,6 +118,7 @@ pub fn run() {
             let artwork_progress = Arc::new(commands::ArtworkProgressState::default());
             let cloud_sync_running = Arc::new(AtomicBool::new(false));
             let cloud_sync_requested = Arc::new(AtomicBool::new(false));
+            let wervik_sync_generation = Arc::new(AtomicUsize::new(0));
             // Picks up box art for anything the last scan left uncovered
             // (e.g. Wervik was closed before a previous fetch finished, or
             // this feature is new and the ROM library predates it).
@@ -169,6 +171,7 @@ pub fn run() {
                 steam_owned_games_fetch_running,
                 metadata_fetch_running,
                 metadata_progress,
+                metadata_fetch_generation,
                 store,
                 game_setup_dir,
                 app_data_dir,
@@ -179,6 +182,7 @@ pub fn run() {
                 artwork_progress,
                 cloud_sync_running,
                 cloud_sync_requested,
+                wervik_sync_generation,
             };
             state.seed_provider_playtime();
             state.dedupe_rom_games_by_metadata();
@@ -190,6 +194,7 @@ pub fn run() {
             let achievement_queries = state.achievement_queries();
             let metadata_fetch_running = state.metadata_fetch_running.clone();
             let metadata_progress = state.metadata_progress.clone();
+            let metadata_fetch_generation = state.metadata_fetch_generation.clone();
             let achievements_fetch_running = state.retro_achievements_fetch_running.clone();
             let metadata_app_handle = state.app_handle.clone();
             let metadata_app_data_dir = state.app_data_dir.clone();
@@ -221,6 +226,8 @@ pub fn run() {
                 metadata_queries,
                 metadata_fetch_running,
                 metadata_progress,
+                metadata_fetch_generation,
+                0,
                 metadata_settings.metadata_provider,
                 metadata_settings.igdb_client_id,
                 metadata_settings.igdb_client_secret,
