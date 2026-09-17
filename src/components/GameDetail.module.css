@@ -297,6 +297,8 @@
 }
 
 .lightboxContent {
+  width: min(1400px, calc(100vw - 96px));
+  height: min(780px, calc(100vh - 96px));
   max-width: min(1400px, calc(100vw - 96px));
   max-height: calc(100vh - 96px);
   display: flex;
@@ -311,6 +313,8 @@
 
 .lightboxImage {
   display: block;
+  width: 100%;
+  height: 100%;
   max-width: 100%;
   max-height: calc(100vh - 96px);
   object-fit: contain;
@@ -407,6 +411,8 @@
 @media (max-width: 720px) {
   .lightbox { padding: 24px; }
   .lightboxContent {
+    width: calc(100vw - 48px);
+    height: calc(100vh - 48px);
     max-width: calc(100vw - 48px);
     max-height: calc(100vh - 48px);
   }
@@ -585,9 +591,17 @@
 
 .achievementsHeading {
   display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.achievementsTitleGroup {
+  display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-bottom: 10px;
+  min-width: 0;
 }
 
 .achievementsTitle {
@@ -603,7 +617,6 @@
 }
 
 .achievementsRefreshButton {
-  margin-left: auto;
   width: 26px;
   height: 26px;
   border-radius: 999px;
@@ -634,6 +647,23 @@
 
 .achievementsRefreshButton:focus-visible {
   box-shadow: var(--shadow-focus);
+}
+
+.achievementsActions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hardcoreInline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .achievementsGrid {
@@ -718,10 +748,11 @@
 }
 
 .achievementsToggle {
+  background: transparent;
+  border: none;
   color: var(--cyan);
   font-size: 0.78rem;
   font-weight: 600;
-  margin-top: 8px;
   padding: 2px 0;
 }
 
@@ -848,9 +879,8 @@
   border-color: var(--violet);
 }
 
-.secondaryButton.active {
-  color: var(--cyan);
-  border-color: var(--cyan);
+.secondaryButton:focus-visible {
+  box-shadow: var(--shadow-focus);
 }
 
 .miniActionsRow {
@@ -887,10 +917,10 @@
   box-shadow: var(--shadow-focus);
 }
 
-.reactionButton.likeActive {
-  color: var(--cyan);
-  border-color: var(--cyan);
-  background: rgba(54, 217, 255, 0.08);
+.reactionButton.favoriteActive {
+  color: #ff9ab3;
+  border-color: #ff7f9d;
+  background: rgba(255, 127, 157, 0.08);
 }
 
 .reactionButton.dislikeActive {
@@ -899,36 +929,9 @@
   background: rgba(255, 127, 127, 0.08);
 }
 
-.secondaryButton:focus-visible {
-  box-shadow: var(--shadow-focus);
-}
-
 .customConfigDot {
   color: var(--cyan);
   margin-left: 2px;
-}
-
-.hardcoreControl {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.hardcoreLabel {
-  font-size: 0.86rem;
-  font-weight: 600;
-}
-
-.hardcoreDescription {
-  color: var(--text-secondary);
-  font-size: 0.72rem;
-  line-height: 1.35;
-  margin-top: 4px;
 }
 
 .launchError {

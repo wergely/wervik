@@ -136,7 +136,6 @@ function fromSteam(data: SteamGameAchievements): DisplayAchievements {
 function activeFeatures(game: Game): string[] {
   const features: string[] = [];
   if (game.nativeEmulator) features.push(`Native: ${game.nativeEmulator}`);
-  if (supportsHardcoreMode(game) && game.hardcoreMode) features.push("Hardcore mode");
   return features;
 }
 
@@ -524,25 +523,17 @@ export function GameDetail({
                 ⚙ {game.nativeEmulator} Settings
               </button>
             )}
-            <button
-              type="button"
-              className={`${styles.secondaryButton} ${game.isFavorite ? styles.active : ""}`}
-              data-nav-item
-              onClick={() => onToggleFavorite(game.id)}
-              aria-pressed={game.isFavorite}
-            >
-              {game.isFavorite ? "★ Favorited" : "☆ Favorite"}
-            </button>
             <div className={styles.miniActionsRow}>
               <button
                 type="button"
-                className={`${styles.reactionButton} ${game.reaction === "like" ? styles.likeActive : ""}`}
+                className={`${styles.reactionButton} ${game.isFavorite ? styles.favoriteActive : ""}`}
                 data-nav-item
-                onClick={() => onSetReaction(game.id, game.reaction === "like" ? null : "like")}
-                aria-pressed={game.reaction === "like"}
-                aria-label={game.reaction === "like" ? "Remove like" : "Like this game"}
+                onClick={() => onToggleFavorite(game.id)}
+                aria-pressed={game.isFavorite}
+                aria-label={game.isFavorite ? "Remove favorite" : "Add favorite"}
+                title={game.isFavorite ? "Remove favorite" : "Add favorite"}
               >
-                <span aria-hidden="true">👍</span>
+                <span aria-hidden="true">{game.isFavorite ? "♥" : "♡"}</span>
               </button>
               <button
                 type="button"
@@ -551,6 +542,7 @@ export function GameDetail({
                 onClick={() => onSetReaction(game.id, game.reaction === "dislike" ? null : "dislike")}
                 aria-pressed={game.reaction === "dislike"}
                 aria-label={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
+                title={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
               >
                 <span aria-hidden="true">👎</span>
               </button>
@@ -586,23 +578,6 @@ export function GameDetail({
 
           {game.source === "retro" && game.requiresBios && game.platformKey && (
             <BiosControl platformKey={game.platformKey} platformName={game.platform ?? "This platform"} />
-          )}
-
-          {supportsHardcoreMode(game) && (
-            <div className={styles.hardcoreControl}>
-              <div>
-                <div className={styles.hardcoreLabel}>Hardcore mode</div>
-                <div className={styles.hardcoreDescription}>
-                  Disables save states, rewind and cheats for this game. Applies on the next launch.
-                </div>
-              </div>
-              <Switch
-                checked={game.hardcoreMode}
-                onChange={(enabled) => onSetHardcoreMode(game.id, enabled)}
-                label={`Hardcore mode for ${game.name}`}
-                disabled={isPlaying}
-              />
-            </div>
           )}
 
           {launchError && <p className={styles.launchError}>{launchError}</p>}
@@ -747,23 +722,51 @@ export function GameDetail({
           {achievements && achievements.totalCount > 0 && (
             <section className={styles.achievementsSection} aria-label="Achievements">
               <div className={styles.achievementsHeading}>
-                <h2 className={styles.achievementsTitle}>Achievements</h2>
-              <span className={styles.achievementsProgress}>
-                  {achievements.earnedCount}/{achievements.totalCount}
-                  {achievements.pointsTotal != null &&
-                    ` · ${achievements.pointsEarned}/${achievements.pointsTotal} pts`}
-                </span>
-                <button
-                  type="button"
-                  className={styles.achievementsRefreshButton}
-                  data-nav-item
-                  onClick={() => loadAchievements(true)}
-                  disabled={achievementsRefreshing}
-                  aria-label="Refresh achievements"
-                  title="Refresh achievements"
-                >
-                  {achievementsRefreshing ? <Spinner /> : "↻"}
-                </button>
+                <div className={styles.achievementsTitleGroup}>
+                  <h2 className={styles.achievementsTitle}>Achievements</h2>
+                  {orderedAchievements.length > ACHIEVEMENTS_PREVIEW_COUNT && (
+                    <button
+                      type="button"
+                      className={styles.achievementsToggle}
+                      data-nav-item
+                      onClick={() => setAchievementsExpanded((expanded) => !expanded)}
+                    >
+                      {achievementsExpanded ? "Collapse" : "View all"}
+                    </button>
+                  )}
+                </div>
+                <span className={styles.achievementsProgress}>
+                    {achievements.earnedCount}/{achievements.totalCount}
+                    {achievements.pointsTotal != null &&
+                      ` · ${achievements.pointsEarned}/${achievements.pointsTotal} pts`}
+                  </span>
+                <div className={styles.achievementsActions}>
+                  {supportsHardcoreMode(game) && (
+                    <div
+                      className={styles.hardcoreInline}
+                      title="Disables save states, rewind and cheats for this game. Applies on the next launch."
+                    >
+                      <span>Hardcore mode</span>
+                      <Switch
+                        checked={game.hardcoreMode}
+                        onChange={(enabled) => onSetHardcoreMode(game.id, enabled)}
+                        label={`Hardcore mode for ${game.name}`}
+                        disabled={isPlaying}
+                      />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className={styles.achievementsRefreshButton}
+                    data-nav-item
+                    onClick={() => loadAchievements(true)}
+                    disabled={achievementsRefreshing}
+                    aria-label="Refresh achievements"
+                    title="Refresh achievements"
+                  >
+                    {achievementsRefreshing ? <Spinner /> : "↻"}
+                  </button>
+                </div>
               </div>
               <div className={styles.achievementsGrid}>
                 {(achievementsExpanded
@@ -798,16 +801,6 @@ export function GameDetail({
                   </button>
                 ))}
               </div>
-              {orderedAchievements.length > ACHIEVEMENTS_PREVIEW_COUNT && (
-                <button
-                  type="button"
-                  className={styles.achievementsToggle}
-                  data-nav-item
-                  onClick={() => setAchievementsExpanded((expanded) => !expanded)}
-                >
-                  {achievementsExpanded ? "Show fewer" : `Show all ${orderedAchievements.length}`}
-                </button>
-              )}
               <div className={styles.achievementsCredit}>
                 Achievements from {achievements.source === "steam" ? "Steam" : "RetroAchievements"}
               </div>
