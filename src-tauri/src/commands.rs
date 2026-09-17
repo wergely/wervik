@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -2581,6 +2583,7 @@ fn web_connect_url(
     state: &str,
     code_challenge: &str,
     redirect_scheme: &str,
+    redirect_uri: &str,
 ) -> Result<String, String> {
     let configured_base =
         std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
@@ -2591,8 +2594,169 @@ fn web_connect_url(
         .append_pair("state", state)
         .append_pair("code_challenge", code_challenge)
         .append_pair("redirect_scheme", redirect_scheme)
+        .append_pair("redirect_uri", redirect_uri)
         .append_pair("installation_id", installation_id);
     Ok(url.to_string())
+}
+
+fn bind_wervik_callback() -> Result<(TcpListener, String), String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|error| format!("Could not bind the Wervik Account callback: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("Could not read the Wervik Account callback port: {error}"))?
+        .port();
+    Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+}
+
+fn callback_url_from_request(redirect_uri: &str, request_target: &str) -> Result<Url, String> {
+    if !request_target.starts_with('/') || request_target.starts_with("//") {
+        return Err("The Wervik Account callback request was invalid".into());
+    }
+    let request_url = Url::parse(&format!("http://callback.invalid{request_target}"))
+        .map_err(|error| format!("The Wervik Account callback request was invalid: {error}"))?;
+    if request_url.path() != "/callback" {
+        return Err("The Wervik Account callback request was invalid".into());
+    }
+    let mut callback_url = Url::parse(redirect_uri)
+        .map_err(|error| format!("The Wervik Account callback URI was invalid: {error}"))?;
+    callback_url.set_path(request_url.path());
+    callback_url.set_query(request_url.query());
+    Ok(callback_url)
+}
+
+fn read_local_callback(stream: &mut TcpStream, redirect_uri: &str) -> Result<Url, String> {
+    let mut request = Vec::with_capacity(4096);
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not read the Wervik Account callback: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if request.len() > 16 * 1024 {
+            return Err("The Wervik Account callback request was too large".into());
+        }
+    }
+
+    let request_line = request
+        .split(|byte| *byte == b'\n')
+        .next()
+        .and_then(|line| std::str::from_utf8(line).ok())
+        .map(str::trim_end)
+        .ok_or_else(|| "The Wervik Account callback request was invalid".to_string())?;
+    let mut fields = request_line.split_ascii_whitespace();
+    let method = fields.next();
+    let target = fields.next();
+    if method != Some("GET") {
+        return Err("The Wervik Account callback must use GET".into());
+    }
+    let Some(target) = target else {
+        return Err("The Wervik Account callback request was invalid".into());
+    };
+    callback_url_from_request(redirect_uri, target)
+}
+
+fn write_local_callback_response(stream: &mut TcpStream, status: &str, message: &str) {
+    let body =
+        format!("<!doctype html><meta charset=\"utf-8\"><title>Wervik</title><p>{message}</p>");
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn local_callback_target(url: &Url) -> String {
+    let mut target = url.clone();
+    target.set_query(None);
+    target.set_fragment(None);
+    target.to_string()
+}
+
+fn clear_local_pending_wervik_connect(app: &tauri::AppHandle, redirect_uri: &str) {
+    let Some(state_handle) = app.try_state::<AppStateHandle>() else {
+        return;
+    };
+    let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+    let is_current_attempt = state
+        .store
+        .pending_wervik_connect()
+        .is_some_and(|pending| pending.redirect_uri.as_deref() == Some(redirect_uri));
+    if is_current_attempt {
+        state.store.clear_pending_wervik_connect();
+    }
+}
+
+fn spawn_wervik_callback_listener(
+    app: tauri::AppHandle,
+    listener: TcpListener,
+    redirect_uri: String,
+) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(WERVIK_CONNECT_DURATION_S as u64);
+        if let Err(error) = listener.set_nonblocking(true) {
+            eprintln!("Could not prepare the Wervik Account callback: {error}");
+            clear_local_pending_wervik_connect(&app, &redirect_uri);
+            return;
+        }
+
+        let callback = loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let result = read_local_callback(&mut stream, &redirect_uri);
+                    match result {
+                        Ok(url) => {
+                            write_local_callback_response(
+                                &mut stream,
+                                "200 OK",
+                                "Login received. You can return to Wervik.",
+                            );
+                            break Some(url);
+                        }
+                        Err(error) => {
+                            write_local_callback_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                "The Wervik Account callback request was invalid.",
+                            );
+                            eprintln!("Ignoring invalid Wervik Account callback request: {error}");
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        clear_local_pending_wervik_connect(&app, &redirect_uri);
+                        let _ = app.emit(
+                            WERVIK_ACCOUNT_ERROR_EVENT,
+                            "The Wervik Account connection timed out.",
+                        );
+                        break None;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(error) => {
+                    eprintln!("Could not accept the Wervik Account callback: {error}");
+                    clear_local_pending_wervik_connect(&app, &redirect_uri);
+                    let _ = app.emit(
+                        WERVIK_ACCOUNT_ERROR_EVENT,
+                        "Could not receive the Wervik Account callback.",
+                    );
+                    break None;
+                }
+            }
+        };
+
+        if let Some(url) = callback {
+            finish_wervik_connect(app, url);
+        }
+    });
 }
 
 fn exchange_desktop_connect(
@@ -2908,10 +3072,12 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
 }
 
 pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
-    if !matches!(url.scheme(), "wervik" | "wervik-dev")
-        || url.host_str() != Some("auth")
-        || url.path() != "/callback"
-    {
+    let is_custom_scheme_callback = matches!(url.scheme(), "wervik" | "wervik-dev")
+        && url.host_str() == Some("auth")
+        && url.path() == "/callback";
+    let is_local_callback =
+        url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.path() == "/callback";
+    if !is_custom_scheme_callback && !is_local_callback {
         return;
     }
 
@@ -2932,8 +3098,13 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         let pending = state.store.pending_wervik_connect();
         let valid = pending.as_ref().is_some_and(|pending| {
+            let callback_target_matches = if let Some(expected_uri) = &pending.redirect_uri {
+                is_local_callback && expected_uri == &local_callback_target(&url)
+            } else {
+                is_custom_scheme_callback && pending.redirect_scheme == url.scheme()
+            };
             Some(pending.state.as_str()) == callback_state.as_deref()
-                && pending.redirect_scheme == url.scheme()
+                && callback_target_matches
                 && pending.expires_at > now_unix()
         });
         if !valid {
@@ -2944,6 +3115,7 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
             );
             return;
         }
+        state.store.clear_pending_wervik_connect();
         pending.expect("validated pending Wervik connection")
     };
 
@@ -3017,6 +3189,7 @@ pub fn connect_wervik_account(
     app: tauri::AppHandle,
     state: State<AppStateHandle>,
 ) -> Result<(), String> {
+    let (listener, redirect_uri) = bind_wervik_callback()?;
     let url = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let connect_state = random_connect_value();
@@ -3026,6 +3199,7 @@ pub fn connect_wervik_account(
             state: connect_state.clone(),
             code_verifier: code_verifier.clone(),
             redirect_scheme: WERVIK_REDIRECT_SCHEME.to_string(),
+            redirect_uri: Some(redirect_uri.clone()),
             installation_id: installation_id.clone(),
             expires_at: now_unix() + WERVIK_CONNECT_DURATION_S,
         };
@@ -3034,6 +3208,7 @@ pub fn connect_wervik_account(
             &connect_state,
             &pkce_challenge(&code_verifier),
             WERVIK_REDIRECT_SCHEME,
+            &redirect_uri,
         )?;
         state.store.set_pending_wervik_connect(pending.clone());
         url
@@ -3047,6 +3222,7 @@ pub fn connect_wervik_account(
             .clear_pending_wervik_connect();
         return Err(error);
     }
+    spawn_wervik_callback_listener(app, listener, redirect_uri);
     Ok(())
 }
 
@@ -3485,5 +3661,28 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn local_callback_keeps_the_bound_origin_and_reads_auth_query_parameters() {
+        let callback = callback_url_from_request(
+            "http://127.0.0.1:43127/callback",
+            "/callback?code=one-time-code&state=state-value",
+        )
+        .unwrap();
+
+        assert_eq!(
+            callback.as_str(),
+            "http://127.0.0.1:43127/callback?code=one-time-code&state=state-value"
+        );
+    }
+
+    #[test]
+    fn local_callback_rejects_a_different_path() {
+        assert!(callback_url_from_request(
+            "http://127.0.0.1:43127/callback",
+            "/other?code=one-time-code"
+        )
+        .is_err());
     }
 }

@@ -44,7 +44,13 @@ pub struct PendingWervikConnect {
     pub state: String,
     pub code_verifier: String,
     #[serde(default = "default_wervik_redirect_scheme")]
+    /// Legacy custom scheme, or the scheme paired with `redirect_uri` for a
+    /// current local HTTP callback.
     pub redirect_scheme: String,
+    /// Exact loopback callback URI owned by the listener started for this
+    /// connection attempt. `None` means this is a legacy custom-scheme flow.
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
     pub installation_id: String,
     pub expires_at: i64,
 }
