@@ -1952,7 +1952,7 @@ fn build_argv(
 /// reliable generic `--windowed` switch: DuckStation and FBNeo use different
 /// names, while Cemu and gopher64 simply default to windowed when fullscreen
 /// is not requested.
-fn windowed_launch_arg(emulator_id: &str, arg: &str, maximize_window: bool) -> Option<&str> {
+fn windowed_launch_arg<'a>(emulator_id: &str, arg: &'a str, maximize_window: bool) -> Option<&'a str> {
     if !maximize_window {
         return Some(arg);
     }
