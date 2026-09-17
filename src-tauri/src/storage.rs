@@ -91,6 +91,9 @@ pub struct Settings {
     pub library_platform_filter: Vec<String>,
     #[serde(default)]
     pub library_favorites_only: bool,
+    /// Whether the Library grid should include games owned but not installed.
+    #[serde(default)]
+    pub library_show_not_installed: bool,
     /// Advanced filters for the locally cached IGDB metadata attached to
     /// library games. Empty lists and `None` mean no restriction.
     #[serde(
@@ -219,6 +222,7 @@ impl Default for Settings {
             library_source_filter: default_all_filters(),
             library_platform_filter: default_all_filters(),
             library_favorites_only: false,
+            library_show_not_installed: false,
             library_igdb_genre_filter: default_all_filters(),
             library_igdb_platform_filter: default_all_filters(),
             library_igdb_developer_filter: default_all_filters(),

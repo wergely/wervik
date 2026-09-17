@@ -199,6 +199,8 @@ export interface Settings {
   /** Empty means all retro platforms; otherwise the selected platforms. */
   libraryPlatformFilter: string[];
   libraryFavoritesOnly: boolean;
+  /** Whether the Library grid includes games that are not installed. */
+  libraryShowNotInstalled: boolean;
   /** Advanced filters sourced from locally cached IGDB metadata. */
   libraryIgdbGenreFilter: string[];
   libraryIgdbPlatformFilter: string[];

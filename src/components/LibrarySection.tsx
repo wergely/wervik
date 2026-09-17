@@ -60,6 +60,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
   const advancedRef = useRef<HTMLDivElement>(null);
   const sortMode: SortMode = settings?.librarySortMode ?? "playtime";
   const favoritesOnly = settings?.libraryFavoritesOnly ?? false;
+  const showNotInstalled = settings?.libraryShowNotInstalled ?? false;
   const sourceFilter = (settings?.librarySourceFilter ?? []).filter((source) =>
     sourceOptions.some((option) => option.value === source),
   );
@@ -155,6 +156,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
     if (platformFilter.length > 0) {
       list = list.filter((g) => g.platform != null && platformFilter.includes(g.platform));
     }
+    if (!showNotInstalled) list = list.filter((g) => g.isInstalled);
     if (igdbGenreFilter.length > 0) {
       list = list.filter((g) => g.igdbMetadata?.genres.some((genre) => igdbGenreFilter.includes(genre)));
     }
@@ -190,6 +192,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
     search,
     sortMode,
     favoritesOnly,
+    showNotInstalled,
     sourceFilter,
     platformFilter,
     igdbGenreFilter,
@@ -210,6 +213,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
     igdbMinScore != null,
     igdbYearFrom != null || igdbYearTo != null,
     igdbMetadataOnly,
+    showNotInstalled,
   ].filter(Boolean).length;
 
   function clearAdvancedFilters() {
@@ -222,6 +226,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
       libraryIgdbYearFrom: null,
       libraryIgdbYearTo: null,
       libraryIgdbMetadataOnly: false,
+      libraryShowNotInstalled: false,
     });
   }
 
@@ -411,6 +416,15 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
                     data-nav-item
                   />
                   <span>Only games with IGDB metadata</span>
+                </label>
+                <label className={styles.metadataOnly}>
+                  <input
+                    type="checkbox"
+                    checked={showNotInstalled}
+                    onChange={(event) => onUpdateSettings({ libraryShowNotInstalled: event.target.checked })}
+                    data-nav-item
+                  />
+                  <span>Show not installed games</span>
                 </label>
                 {advancedFilterCount > 0 && (
                   <button
