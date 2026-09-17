@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAchievementsOverview, getRaProfileSummary } from "../api/tauri";
 import type { AchievementsOverview, AchievementSource, Game, LibrarySnapshot, RaProfileSummary } from "../types";
 import { formatLastPlayed } from "../utils/format";
+import { AchievementDetailsModal, type AchievementDetails } from "./AchievementDetailsModal";
 import { AchievementGameCard } from "./AchievementGameCard";
 import { PlatformIcon } from "./PlatformIcon";
 import { Spinner } from "./Spinner";
@@ -16,14 +17,18 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "recent", label: "Recently Unlocked" },
 ];
 
-/** How many "closest to 100%" cards the Overview tab shows — a shortlist,
- * not a full browser (that's what the Games tab is for). */
+/** Maximum number of "closest to 100%" cards the Overview tab shows — a
+ * shortlist, not a full browser (that's what the Games tab is for). */
 const OVERVIEW_GAMES_LIMIT = 10;
 const OVERVIEW_UNLOCKS_LIMIT = 6;
+const OVERVIEW_CARD_WIDTH = 190;
+const OVERVIEW_CARD_GAP = 20;
 
 interface AchievementsViewProps {
   snapshot: LibrarySnapshot;
   onSelectGame: (game: Game) => void;
+  registerBackHandler: (handler: (() => void) | null) => void;
+  registerNavScope: (el: HTMLElement | null) => void;
 }
 
 interface PlatformGroup {
@@ -57,11 +62,19 @@ function groupByPlatform(overview: AchievementsOverview): PlatformGroup[] {
   return Array.from(groups.values()).sort((a, b) => b.totalCount - a.totalCount);
 }
 
-export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewProps) {
+export function AchievementsView({
+  snapshot,
+  onSelectGame,
+  registerBackHandler,
+  registerNavScope,
+}: AchievementsViewProps) {
   const [tab, setTab] = useState<Tab>("overview");
   const [overview, setOverview] = useState<AchievementsOverview | null>(null);
   const [profile, setProfile] = useState<RaProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [overviewCardCount, setOverviewCardCount] = useState(1);
+  const [selectedUnlock, setSelectedUnlock] = useState<AchievementsOverview["recentUnlocks"][number] | null>(null);
+  const overviewCardRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,6 +115,7 @@ export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewPro
     [overview],
   );
   const inProgress = useMemo(() => startedGames.filter((game) => game.completionPercent < 100), [startedGames]);
+  const overviewGames = inProgress.slice(0, Math.min(OVERVIEW_GAMES_LIMIT, overviewCardCount));
   const platformGroups = useMemo(() => (overview ? groupByPlatform(overview) : []), [overview]);
   const completedGamesCount = useMemo(
     () => (overview ? overview.games.filter((game) => game.completionPercent === 100).length : 0),
@@ -114,6 +128,43 @@ export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewPro
       : null;
   const completedGamesPercent =
     overview && overview.games.length > 0 ? Math.round((completedGamesCount / overview.games.length) * 100) : null;
+
+  useLayoutEffect(() => {
+    if (tab !== "overview") return;
+    const row = overviewCardRowRef.current;
+    if (!row) return;
+
+    const updateCardCount = () => {
+      const count = Math.max(
+        1,
+        Math.floor((row.clientWidth + OVERVIEW_CARD_GAP) / (OVERVIEW_CARD_WIDTH + OVERVIEW_CARD_GAP)),
+      );
+      setOverviewCardCount(count);
+    };
+
+    updateCardCount();
+    const observer = new ResizeObserver(updateCardCount);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [inProgress.length, tab]);
+
+  function openUnlock(unlock: AchievementsOverview["recentUnlocks"][number]) {
+    setSelectedUnlock(unlock);
+  }
+
+  const selectedUnlockDetails: AchievementDetails | null = selectedUnlock
+    ? {
+        title: selectedUnlock.achievementTitle,
+        description: selectedUnlock.achievementDescription,
+        iconUrl: selectedUnlock.iconUrl,
+        unlocked: true,
+        unlockedAt: selectedUnlock.unlockedAt,
+        points: selectedUnlock.points > 0 ? selectedUnlock.points : null,
+        unlockedHardcore: false,
+        source: selectedUnlock.source === "steam" ? "Steam" : "RetroAchievements",
+        gameName: selectedUnlock.gameName,
+      }
+    : null;
 
   return (
     <div className={styles.page}>
@@ -196,8 +247,8 @@ export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewPro
                 {inProgress.length > 0 && (
                   <section className={styles.section}>
                     <h2 className={styles.sectionTitle}>Closest to 100%</h2>
-                    <div className={styles.cardRow}>
-                      {inProgress.slice(0, OVERVIEW_GAMES_LIMIT).map((entry) => (
+                    <div ref={overviewCardRowRef} className={styles.cardRow}>
+                      {overviewGames.map((entry) => (
                         <AchievementGameCard
                           key={`${entry.source}-${entry.gameId}`}
                           entry={entry}
@@ -223,7 +274,10 @@ export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewPro
                         </button>
                       )}
                     </div>
-                    <UnlockList unlocks={overview.recentUnlocks.slice(0, OVERVIEW_UNLOCKS_LIMIT)} />
+                    <UnlockList
+                      unlocks={overview.recentUnlocks.slice(0, OVERVIEW_UNLOCKS_LIMIT)}
+                      onSelect={openUnlock}
+                    />
                   </section>
                 )}
               </>
@@ -273,11 +327,20 @@ export function AchievementsView({ snapshot, onSelectGame }: AchievementsViewPro
 
             {tab === "recent" && (
               <section className={styles.section}>
-                <UnlockList unlocks={overview.recentUnlocks} />
+                <UnlockList unlocks={overview.recentUnlocks} onSelect={openUnlock} />
               </section>
             )}
           </div>
         </>
+      )}
+
+      {selectedUnlockDetails && (
+        <AchievementDetailsModal
+          achievement={selectedUnlockDetails}
+          onClose={() => setSelectedUnlock(null)}
+          registerBackHandler={registerBackHandler}
+          registerNavScope={registerNavScope}
+        />
       )}
     </div>
   );
@@ -323,11 +386,24 @@ function StatCard({ icon, accent, label, value, percent, barPercent, subtitle }:
   );
 }
 
-function UnlockList({ unlocks }: { unlocks: AchievementsOverview["recentUnlocks"] }) {
+function UnlockList({
+  unlocks,
+  onSelect,
+}: {
+  unlocks: AchievementsOverview["recentUnlocks"];
+  onSelect: (unlock: AchievementsOverview["recentUnlocks"][number]) => void;
+}) {
   return (
     <div className={styles.unlockList}>
       {unlocks.map((unlock, index) => (
-        <div key={`${unlock.gameId}-${unlock.achievementTitle}-${index}`} className={styles.unlockRow}>
+        <button
+          key={`${unlock.gameId}-${unlock.achievementTitle}-${index}`}
+          type="button"
+          className={styles.unlockRow}
+          data-nav-item
+          onClick={() => onSelect(unlock)}
+          aria-label={`Show details for ${unlock.achievementTitle}`}
+        >
           <img className={styles.unlockIcon} src={unlock.iconUrl} alt="" loading="lazy" />
           <div className={styles.unlockInfo}>
             <span className={styles.unlockTitle} title={unlock.achievementDescription}>
@@ -339,7 +415,7 @@ function UnlockList({ unlocks }: { unlocks: AchievementsOverview["recentUnlocks"
             </span>
           </div>
           <span className={styles.unlockTime}>{formatLastPlayed(unlock.unlockedAt)}</span>
-        </div>
+        </button>
       ))}
     </div>
   );

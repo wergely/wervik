@@ -26,6 +26,7 @@ import type {
 } from "../types";
 import { formatLastPlayed, formatPlaytime, formatSize, sourceLabel } from "../utils/format";
 import { ActiveFeaturesRow } from "./ActiveFeaturesRow";
+import { AchievementDetailsModal, type AchievementDetails } from "./AchievementDetailsModal";
 import { BiosControl } from "./BiosControl";
 import { OverflowMenu } from "./OverflowMenu";
 import { SourceBadge } from "./SourceBadge";
@@ -66,15 +67,30 @@ interface DisplayAchievements {
   totalCount: number;
   pointsEarned: number | null;
   pointsTotal: number | null;
-  achievements: {
-    id: string;
-    title: string;
-    description: string;
-    iconUrl: string;
-    unlocked: boolean;
-    unlockedHardcore: boolean;
-    points: number | null;
-  }[];
+  achievements: DisplayAchievement[];
+}
+
+interface DisplayAchievement {
+  id: string;
+  title: string;
+  description: string;
+  iconUrl: string;
+  unlocked: boolean;
+  unlockedHardcore: boolean;
+  points: number | null;
+  unlockedAt: number | null;
+}
+
+function toAchievementDetails(
+  achievement: DisplayAchievement,
+  source: DisplayAchievements["source"],
+  gameName: string,
+): AchievementDetails {
+  return {
+    ...achievement,
+    source: source === "steam" ? "Steam" : "RetroAchievements",
+    gameName,
+  };
 }
 
 function fromRa(data: RaGameAchievements): DisplayAchievements {
@@ -92,6 +108,7 @@ function fromRa(data: RaGameAchievements): DisplayAchievements {
       unlocked: achievement.unlocked,
       unlockedHardcore: achievement.unlockedHardcore,
       points: achievement.points,
+      unlockedAt: achievement.unlockedAt,
     })),
   };
 }
@@ -111,6 +128,7 @@ function fromSteam(data: SteamGameAchievements): DisplayAchievements {
       unlocked: achievement.unlocked,
       unlockedHardcore: false,
       points: null,
+      unlockedAt: achievement.unlockedAt,
     })),
   };
 }
@@ -209,6 +227,7 @@ export function GameDetail({
   const [achievementsLoading, setAchievementsLoading] = useState(false);
   const [achievementsRefreshing, setAchievementsRefreshing] = useState(false);
   const [achievementsExpanded, setAchievementsExpanded] = useState(false);
+  const [selectedAchievement, setSelectedAchievement] = useState<DisplayAchievement | null>(null);
   const [achievementsError, setAchievementsError] = useState<string | null>(null);
   const achievementsRequestRef = useRef(0);
   const [overflowOpen, setOverflowOpen] = useState(false);
@@ -366,6 +385,7 @@ export function GameDetail({
   useEffect(() => {
     setAchievements(null);
     setAchievementsExpanded(false);
+    setSelectedAchievement(null);
     loadAchievements(false);
   }, [loadAchievements]);
 
@@ -706,7 +726,7 @@ export function GameDetail({
             <section className={styles.achievementsSection} aria-label="Achievements">
               <div className={styles.achievementsHeading}>
                 <h2 className={styles.achievementsTitle}>Achievements</h2>
-                <span className={styles.achievementsProgress}>
+              <span className={styles.achievementsProgress}>
                   {achievements.earnedCount}/{achievements.totalCount}
                   {achievements.pointsTotal != null &&
                     ` · ${achievements.pointsEarned}/${achievements.pointsTotal} pts`}
@@ -728,10 +748,14 @@ export function GameDetail({
                   ? achievements.achievements
                   : achievements.achievements.slice(0, ACHIEVEMENTS_PREVIEW_COUNT)
                 ).map((achievement) => (
-                  <div
+                  <button
                     key={achievement.id}
+                    type="button"
                     className={`${styles.achievementCard} ${achievement.unlocked ? styles.achievementUnlocked : styles.achievementLocked}`}
                     title={achievement.description || achievement.title}
+                    data-nav-item
+                    onClick={() => setSelectedAchievement(achievement)}
+                    aria-label={`Show details for ${achievement.title || "Unnamed achievement"}`}
                   >
                     <img className={styles.achievementBadge} src={achievement.iconUrl} alt="" loading="lazy" />
                     <div className={styles.achievementInfo}>
@@ -749,7 +773,7 @@ export function GameDetail({
                             : "Locked"}
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
               {achievements.achievements.length > ACHIEVEMENTS_PREVIEW_COUNT && (
@@ -786,6 +810,15 @@ export function GameDetail({
           <ActiveFeaturesRow features={activeFeatures(game)} />
         </div>
       </div>
+
+      {selectedAchievement && achievements && (
+        <AchievementDetailsModal
+          achievement={toAchievementDetails(selectedAchievement, achievements.source, game.name)}
+          onClose={() => setSelectedAchievement(null)}
+          registerBackHandler={registerBackHandler}
+          registerNavScope={registerNavScope}
+        />
+      )}
 
       {lightboxPath && createPortal(
         <div

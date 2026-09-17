@@ -194,8 +194,9 @@
 .cardRow {
   display: flex;
   gap: 20px;
-  overflow-x: auto;
+  overflow: hidden;
   padding-bottom: 8px;
+  min-width: 0;
 }
 
 .cardGrid {
@@ -286,14 +287,25 @@
 
 .unlockRow {
   display: flex;
+  width: 100%;
+  color: inherit;
+  font: inherit;
   align-items: center;
   gap: 14px;
   padding: 10px 12px;
+  text-align: left;
+  background: transparent;
+  border: none;
   border-radius: var(--radius-sm);
 }
 
-.unlockRow:hover {
+.unlockRow:hover,
+.unlockRow:focus-visible {
   background: var(--surface);
+}
+
+.unlockRow:focus-visible {
+  box-shadow: var(--shadow-focus);
 }
 
 .unlockIcon {

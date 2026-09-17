@@ -63,7 +63,6 @@ export function Header({
     <header className={styles.header}>
       <div className={styles.left}>
         <Logo size={30} withWordmark />
-        <span className={styles.tagline}>Your games. One library.</span>
       </div>
 
       <nav className={styles.nav} aria-label="Main navigation">

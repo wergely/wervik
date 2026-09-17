@@ -1,0 +1,192 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(9, 11, 16, 0.72);
+  backdrop-filter: blur(5px);
+  animation: backdropIn 140ms var(--ease) both;
+}
+
+.modal {
+  width: min(520px, 100%);
+  max-height: min(680px, calc(100vh - 48px));
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+  animation: modalIn 160ms var(--ease) both;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.headerTitles {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.eyebrow {
+  color: var(--cyan);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gameName {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.closeButton {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 0 2px;
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.closeButton:hover,
+.closeButton:focus-visible {
+  color: var(--cyan);
+  border-color: var(--cyan);
+}
+
+.closeButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.content {
+  padding: 22px;
+}
+
+.achievementHeader {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.icon,
+.iconPlaceholder {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.icon {
+  display: block;
+  object-fit: cover;
+}
+
+.iconPlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+}
+
+.titleGroup {
+  min-width: 0;
+}
+
+.title {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 1.25rem;
+  line-height: 1.2;
+}
+
+.status {
+  display: inline-flex;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.statusUnlocked {
+  color: #86efac;
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.statusLocked {
+  color: var(--text-secondary);
+  background: rgba(148, 155, 168, 0.12);
+}
+
+.description {
+  margin: 24px 0;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+.detailRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.detailRow strong {
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+}
+
+@keyframes backdropIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 560px) {
+  .backdrop { padding: 14px; }
+  .header { padding-inline: 16px; }
+  .content { padding: 18px 16px; }
+}

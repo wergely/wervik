@@ -282,7 +282,12 @@ export default function App() {
             justFinishedGameId={justFinishedGameId}
           />
         ) : view === "achievements" ? (
-          <AchievementsView snapshot={snapshot} onSelectGame={handleSelectGame} />
+          <AchievementsView
+            snapshot={snapshot}
+            onSelectGame={handleSelectGame}
+            registerBackHandler={setBackOverride}
+            registerNavScope={setNavScope}
+          />
         ) : view === "platforms" ? (
           <PlatformsView onSelectPlatform={handleSelectPlatform} />
         ) : view === "platformDetail" && selectedPlatformKey ? (
