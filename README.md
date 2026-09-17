@@ -113,6 +113,13 @@ application data directory. Existing retro and Steam playtime is imported as
 an initial baseline; new launches are tracked by monitoring the installed game
 process and are retained locally across restarts.
 
+When a Wervik account is connected, games launched through the managed
+RetroArch cores also synchronize their normal saves and save states after the
+emulator exits, and restore them before the next launch. The files stay in
+RetroArch's managed `saves` and `states` directories; a local file newer than
+the cloud copy is kept. The same ROM filename and size are required on the
+other installation for the save to be associated with the game.
+
 ## Credits
 
 - Platform/console icons: [KyleBing/retro-game-console-icons](https://github.com/KyleBing/retro-game-console-icons)

@@ -670,7 +670,7 @@ fn retroarch_executable_path(app_data_dir: &Path) -> PathBuf {
     managed_dir(app_data_dir).join("retroarch").join("retroarch")
 }
 
-fn retroarch_runtime_dir(app_data_dir: &Path) -> PathBuf {
+pub(crate) fn retroarch_runtime_dir(app_data_dir: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         managed_dir(app_data_dir).join("retroarch")
@@ -685,7 +685,10 @@ fn retroarch_runtime_dir(app_data_dir: &Path) -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-const RETROARCH_DEFAULTS_MARKER: &str = ".wervik-defaults-v2";
+const RETROARCH_DEFAULTS_MARKER: &str = ".wervik-defaults-v3";
+
+#[cfg(target_os = "macos")]
+const RETROARCH_SAVE_DIRECTORIES_MARKER: &str = ".wervik-save-directories-v1";
 
 /// Sets one RetroArch key without discarding the rest of the user's config.
 /// RetroArch rewrites this file itself, so this intentionally edits only the
@@ -831,6 +834,9 @@ fn ensure_retroarch_defaults(app_data_dir: &Path) -> Result<(), String> {
     }
 
     let config_path = runtime_dir.join("retroarch.cfg");
+    for directory in ["saves", "states"] {
+        std::fs::create_dir_all(runtime_dir.join(directory)).map_err(|error| error.to_string())?;
+    }
     for (key, value) in [
         // WASAPI can reject the shared device format on otherwise healthy
         // Windows endpoints. DirectSound works with the same endpoints and
@@ -842,6 +848,8 @@ fn ensure_retroarch_defaults(app_data_dir: &Path) -> Result<(), String> {
         ("video_swap_interval", "1"),
         ("video_threaded", "false"),
         ("run_ahead_enabled", "false"),
+        ("savefile_directory", "saves"),
+        ("savestate_directory", "states"),
         // A value of 1.0 provides a real 1x cap if the audio driver cannot
         // initialize, while keeping ordinary content at its native rate.
         ("fastforward_ratio", "1.000000"),
@@ -873,7 +881,8 @@ fn ensure_retroarch_macos_config(app_data_dir: &Path) -> Result<(), String> {
     }
 
     let config_path = runtime_dir.join("retroarch.cfg");
-    if config_path.is_file() {
+    let marker = runtime_dir.join(RETROARCH_SAVE_DIRECTORIES_MARKER);
+    if marker.is_file() {
         return Ok(());
     }
 
@@ -882,14 +891,29 @@ fn ensure_retroarch_macos_config(app_data_dir: &Path) -> Result<(), String> {
             .replace('\\', "\\\\")
             .replace('"', "\\\"")
     };
-    let config = format!(
-        "libretro_directory = \"{}\"\nsystem_directory = \"{}\"\nsavefile_directory = \"{}\"\nsavestate_directory = \"{}\"\n",
-        config_value(&runtime_dir.join("cores")),
-        config_value(&runtime_dir.join("system")),
-        config_value(&runtime_dir.join("saves")),
-        config_value(&runtime_dir.join("states")),
-    );
-    std::fs::write(config_path, config).map_err(|e| e.to_string())
+    if config_path.is_file() {
+        set_retroarch_option(
+            &config_path,
+            "savefile_directory",
+            &config_value(&runtime_dir.join("saves")),
+        )?;
+        set_retroarch_option(
+            &config_path,
+            "savestate_directory",
+            &config_value(&runtime_dir.join("states")),
+        )?;
+    } else {
+        let config = format!(
+            "libretro_directory = \"{}\"\nsystem_directory = \"{}\"\nsavefile_directory = \"{}\"\nsavestate_directory = \"{}\"\n",
+            config_value(&runtime_dir.join("cores")),
+            config_value(&runtime_dir.join("system")),
+            config_value(&runtime_dir.join("saves")),
+            config_value(&runtime_dir.join("states")),
+        );
+        std::fs::write(&config_path, config).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(marker, b"Wervik managed RetroArch save directories\n")
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]

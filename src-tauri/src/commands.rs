@@ -26,6 +26,7 @@ use crate::retro::discovery::RomGame;
 use crate::retro::platform::Platform;
 use crate::retro::{
     artwork, bios, discovery as retro_discovery, naming as retro_naming, native as retro_native,
+    saves,
 };
 use crate::retroachievements::{self, GameAchievements, RaProfileSummary, RetroAchievementsCache};
 use crate::steam::achievements::{self as steam_achievements, SteamAchievementsCache};
@@ -1897,11 +1898,11 @@ pub enum RetroLaunch {
 /// process and records playtime when it exits.
 #[tauri::command(async)]
 pub fn launch_retro_game(
-    state: State<AppStateHandle>,
+    state_handle: State<AppStateHandle>,
     id: String,
     variant_id: Option<String>,
 ) -> Result<RetroLaunch, String> {
-    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
     let rom = state
         .rom_games
         .iter()
@@ -1970,13 +1971,36 @@ pub fn launch_retro_game(
             retro_native::install_bios(&state.app_data_dir, &emulator, bios_path)?;
         }
 
+        let app_data_dir = state.app_data_dir.clone();
+        let game_setup_dir = state.game_setup_dir.clone();
+        let app_handle = state.app_handle.clone();
+        let platform_key = rom.platform.key().to_string();
+        let is_retroarch = emulator.id.starts_with("retroarch-");
+        let account_token = state
+            .store
+            .wervik_account()
+            .map(|account| account.access_token)
+            .filter(|token| !token.trim().is_empty());
+        drop(state);
+
+        if is_retroarch {
+            if let Some(token) = account_token {
+                if let Err(error) =
+                    saves::restore_game(&app_data_dir, &token, &id, &platform_key, &native_rom_path)
+                {
+                    eprintln!("RetroArch save restore failed for {id}: {error}");
+                }
+            }
+        }
+
+        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         let playtime_session_id = state.playtime.start_session(&id, "retro", now_unix())?;
         let child = match retro_native::spawn(
-            &state.app_data_dir,
+            &app_data_dir,
             emulator,
             &native_rom_path,
-            &state.game_setup_dir,
-            rom.platform.key(),
+            &game_setup_dir,
+            &platform_key,
         ) {
             Ok(child) => child,
             Err(error) => {
@@ -1986,10 +2010,20 @@ pub fn launch_retro_game(
                 return Err(error);
             }
         };
-        let app_handle = state.app_handle.clone();
         std::thread::spawn(move || {
             let mut child = child;
             let _ = child.wait();
+            if is_retroarch {
+                if let Err(error) = saves::sync_game_from_runtime(
+                    &app_handle,
+                    &app_data_dir,
+                    &id,
+                    &platform_key,
+                    &native_rom_path,
+                ) {
+                    eprintln!("RetroArch save sync failed for {id}: {error}");
+                }
+            }
             if let Some(dir) = cleanup_dir {
                 let _ = std::fs::remove_dir_all(dir);
             }
