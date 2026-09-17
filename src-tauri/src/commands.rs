@@ -1559,25 +1559,39 @@ pub fn refresh_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (app_data_dir, settings, wervik_access_token) = {
+    let (app_data_dir, lookup_name, settings, wervik_access_token) = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         state.metadata_cache.remove(&game_id)?;
         metadata::clear_artwork_for(&state.app_data_dir, &game_id)?;
         state.rebuild_known_image_paths();
+        // The library DTO may expose a cached metadata title instead of the
+        // filename-derived ROM title. For a forced refresh, always prefer
+        // the original ROM name so a bad cached match can be corrected.
+        let lookup_name = state
+            .rom_games
+            .iter()
+            .find(|rom| rom.id == game_id)
+            .map(|rom| rom.name.clone())
+            .unwrap_or(game_name);
         let settings = state.store.settings();
         let wervik_access_token = state
             .store
             .wervik_account()
             .map(|account| account.access_token)
             .filter(|token| !token.trim().is_empty());
-        (state.app_data_dir.clone(), settings, wervik_access_token)
+        (
+            state.app_data_dir.clone(),
+            lookup_name,
+            settings,
+            wervik_access_token,
+        )
     };
 
     fetch_and_store_metadata(
         &state,
         &app_data_dir,
         game_id,
-        &game_name,
+        &lookup_name,
         platform,
         &settings,
         wervik_access_token.as_deref(),

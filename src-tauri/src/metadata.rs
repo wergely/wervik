@@ -398,18 +398,44 @@ fn choose_result(
         return None;
     }
     let requested = normalized(requested_name);
-    results.sort_by_key(|game| {
-        let title = game.name.as_deref().map(normalized).unwrap_or_default();
-        let title_rank = if title == requested {
-            0
-        } else if title.starts_with(&requested) || requested.starts_with(&title) {
-            1
-        } else {
-            2
+    results.sort_by(|left, right| {
+        let left_title = left.name.as_deref().map(normalized).unwrap_or_default();
+        let right_title = right.name.as_deref().map(normalized).unwrap_or_default();
+        let title_rank = |title: &str| {
+            if title == requested {
+                0
+            } else if title.starts_with(&requested) || requested.starts_with(title) {
+                1
+            } else if !requested.is_empty() && title.contains(&requested) {
+                2
+            } else {
+                3
+            }
         };
-        let platform_rank =
-            platform_rank(game.platforms.as_deref().unwrap_or(&[]), expected_platform);
-        (platform_rank, title_rank)
+        let left_key = (
+            platform_rank(left.platforms.as_deref().unwrap_or(&[]), expected_platform),
+            title_rank(&left_title),
+        );
+        let right_key = (
+            platform_rank(right.platforms.as_deref().unwrap_or(&[]), expected_platform),
+            title_rank(&right_title),
+        );
+        let key_order = left_key.cmp(&right_key);
+        if key_order != std::cmp::Ordering::Equal {
+            return key_order;
+        }
+
+        // When the API returns a base game and a numbered sequel with the
+        // same platform/title rank, prefer the base title. The normalized
+        // prefix check keeps this tie-breaker narrow, so generic searches
+        // still retain the provider's ordering.
+        if !left_title.is_empty()
+            && !right_title.is_empty()
+            && (left_title.starts_with(&right_title) || right_title.starts_with(&left_title))
+        {
+            return left_title.len().cmp(&right_title.len());
+        }
+        std::cmp::Ordering::Equal
     });
     results.into_iter().next()
 }
@@ -1005,6 +1031,39 @@ mod tests {
             chosen.id, 2,
             "should have picked the SNES release, not the Switch one"
         );
+    }
+
+    #[test]
+    fn choose_result_prefers_base_title_over_numbered_sequel() {
+        let n64_game = |id, name| IgdbGame {
+            id,
+            name: Some(name.to_string()),
+            slug: None,
+            url: None,
+            summary: None,
+            first_release_date: None,
+            cover: None,
+            screenshots: None,
+            genres: None,
+            platforms: Some(vec![IgdbNamedObject {
+                name: Some("Nintendo 64".to_string()),
+            }]),
+            involved_companies: None,
+            rating: None,
+            rating_count: None,
+            aggregated_rating: None,
+            aggregated_rating_count: None,
+        };
+        let sequel = n64_game(2, "Super Mario 64 2");
+        let original = n64_game(1, "Super Mario 64");
+
+        let chosen = choose_result(
+            vec![sequel, original],
+            "Mario 64",
+            Some(Platform::Nintendo64),
+        )
+        .unwrap();
+        assert_eq!(chosen.id, 1);
     }
 
     #[test]
