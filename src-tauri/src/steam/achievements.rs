@@ -21,9 +21,11 @@ use tauri::{AppHandle, Emitter, Manager};
 use ureq::Agent;
 
 use super::vdf;
+use super::SteamCredentials;
 use crate::commands::AppStateHandle;
 
 const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 3;
+const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
 /// A game genuinely having no achievements at all doesn't change from one
 /// sweep to the next, so — same reasoning as `retroachievements` — that's
 /// remembered for much longer than actual progress.
@@ -349,13 +351,74 @@ fn fetch_unlocked(
         .collect())
 }
 
-/// Looks up one Steam game's achievements and the caller's progress on
-/// them. `Ok(None)` means the game genuinely has no achievements at all —
-/// not an error. A private profile, an invalid key, or a network failure
-/// are real errors, surfaced as `Err` rather than hidden as "nothing to
-/// show", since — unlike a RetroAchievements title/console mismatch —
-/// they're something the user can actually go fix.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikAchievementsRequest<'a> {
+    steam_id64: &'a str,
+    app_id: u32,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WervikAchievementsResponse {
+    #[serde(default)]
+    achievements: Option<GameAchievements>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+/// Same lookup as `fetch_for_game_with_key`, but through Wervik's own proxy —
+/// available once a Wervik Account is connected, using Wervik's own Steam Web
+/// API key instead of one the user has to generate and paste in Settings.
+fn fetch_for_game_from_wervik(
+    access_token: &str,
+    steam_id64: &str,
+    app_id: u32,
+) -> Result<Option<GameAchievements>, String> {
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = url::Url::parse(&configured_base)
+        .map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/steam/achievements");
+
+    let mut response = new_agent()
+        .post(url.as_str())
+        .header("Authorization", &format!("Bearer {access_token}"))
+        .send_json(&WervikAchievementsRequest { steam_id64, app_id })
+        .map_err(|error| format!("Wervik Steam achievements request failed: {error}"))?;
+    let response = response
+        .body_mut()
+        .read_json::<WervikAchievementsResponse>()
+        .map_err(|error| format!("Could not read the Wervik Steam achievements response: {error}"))?;
+    if let Some(error) = response.error {
+        return Err(response.message.unwrap_or(error));
+    }
+    Ok(response.achievements)
+}
+
+/// Looks up one Steam game's achievements and the caller's progress on them,
+/// through whichever `SteamCredentials` are currently in effect (the user's
+/// own key, or Wervik's proxy once an account is connected).
 pub fn fetch_for_game(
+    credentials: &SteamCredentials,
+    steam_id64: &str,
+    app_id: u32,
+) -> Result<Option<GameAchievements>, String> {
+    match credentials {
+        SteamCredentials::Manual(api_key) => fetch_for_game_with_key(api_key, steam_id64, app_id),
+        SteamCredentials::Wervik(access_token) => {
+            fetch_for_game_from_wervik(access_token, steam_id64, app_id)
+        }
+    }
+}
+
+/// `Ok(None)` means the game genuinely has no achievements at all — not an
+/// error. A private profile, an invalid key, or a network failure are real
+/// errors, surfaced as `Err` rather than hidden as "nothing to show", since —
+/// unlike a RetroAchievements title/console mismatch — they're something the
+/// user can actually go fix.
+fn fetch_for_game_with_key(
     api_key: &str,
     steam_id64: &str,
     app_id: u32,
@@ -395,13 +458,17 @@ pub fn fetch_for_game(
     }))
 }
 
-fn should_skip(app_handle: &AppHandle, game_id: &str, api_key: &str, steam_id64: &str) -> bool {
+fn should_skip(
+    app_handle: &AppHandle,
+    game_id: &str,
+    credentials: &SteamCredentials,
+    steam_id64: &str,
+) -> bool {
     app_handle
         .try_state::<AppStateHandle>()
         .map(|state| {
             let state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let settings = state.store.settings();
-            if settings.steam_api_key.trim() != api_key
+            if state.steam_credentials().as_ref() != Some(credentials)
                 || state.steam_id64().as_deref() != Some(steam_id64)
             {
                 return true;
@@ -433,16 +500,13 @@ const SWEEP_REQUEST_DELAY: Duration = Duration::from_millis(400);
 pub fn spawn_fetch(
     app_handle: AppHandle,
     app_ids: Vec<(String, u32)>,
-    api_key: String,
+    credentials: SteamCredentials,
     steam_id64: Option<String>,
     running: Arc<AtomicBool>,
 ) {
     let Some(steam_id64) = steam_id64.filter(|id| !id.trim().is_empty()) else {
         return;
     };
-    if api_key.trim().is_empty() {
-        return;
-    }
     if running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -453,9 +517,9 @@ pub fn spawn_fetch(
     std::thread::spawn(move || {
         for (game_id, app_id) in app_ids
             .into_iter()
-            .filter(|(id, _)| !should_skip(&app_handle, id, &api_key, &steam_id64))
+            .filter(|(id, _)| !should_skip(&app_handle, id, &credentials, &steam_id64))
         {
-            match fetch_for_game(&api_key, &steam_id64, app_id) {
+            match fetch_for_game(&credentials, &steam_id64, app_id) {
                 Ok(Some(achievements)) => {
                     let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
@@ -508,8 +572,7 @@ pub fn spawn_fetch(
         // left waiting for another rescan.
         if let Some(state) = app_handle.try_state::<AppStateHandle>() {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            let settings = state.store.settings();
-            if settings.steam_api_key.trim() != api_key
+            if state.steam_credentials().as_ref() != Some(&credentials)
                 || state.steam_id64().as_deref() != Some(steam_id64.as_str())
             {
                 state.start_steam_achievements_fetch();

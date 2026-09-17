@@ -65,9 +65,11 @@ const CATEGORIES: { id: Category; label: string }[] = [
 function MetadataFields({
   settings,
   onUpdateSettings,
+  onNavigate,
 }: {
   settings: SettingsType | null;
   onUpdateSettings: (partial: Partial<SettingsType>) => void;
+  onNavigate: (category: Category) => void;
 }) {
   const { account } = useWervikAccount();
   const [clientId, setClientId] = useState(settings?.igdbClientId ?? "");
@@ -106,36 +108,43 @@ function MetadataFields({
 
   return (
     <>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Metadata provider</div>
-          <div className={styles.rowDescription}>Choose where Wervik gets game details and artwork.</div>
+      {account && (
+        <div className={styles.row}>
+          <div>
+            <div className={styles.rowLabel}>Metadata provider</div>
+            <div className={styles.rowDescription}>Choose where Wervik gets game details and artwork.</div>
+          </div>
+          <select
+            className={styles.providerSelect}
+            value={provider}
+            onChange={(event) =>
+              onUpdateSettings({ metadataProvider: event.target.value as SettingsType["metadataProvider"] })
+            }
+            data-nav-item
+            aria-label="Metadata provider"
+          >
+            <option value="igdb">IGDB</option>
+            <option value="wervik">Wervik</option>
+          </select>
         </div>
-        <select
-          className={styles.providerSelect}
-          value={provider}
-          onChange={(event) => {
-            if (event.target.value === "wervik" && !account) return;
-            onUpdateSettings({ metadataProvider: event.target.value as SettingsType["metadataProvider"] });
-          }}
-          data-nav-item
-          aria-label="Metadata provider"
-        >
-          <option value="igdb">IGDB</option>
-          <option value="wervik" disabled={!account}>
-            Wervik{account ? "" : " (connect account first)"}
-          </option>
-        </select>
-      </div>
+      )}
 
       {provider === "wervik" ? (
         <p className={styles.groupDescription}>
-          {account
-            ? "Wervik metadata is available through your connected account. Wervik caches shared game data and artwork so repeated lookups do not need to call IGDB again."
-            : "Connect your Wervik Account to enable this provider."}
+          Wervik metadata is available through your connected account. Wervik caches shared game data and artwork so
+          repeated lookups do not need to call IGDB again.
         </p>
       ) : (
         <>
+          {!account && (
+            <p className={styles.groupDescription}>
+              Without a{" "}
+              <button type="button" className={styles.accountCardLink} data-nav-item onClick={() => onNavigate("account")}>
+                Wervik Account
+              </button>
+              , metadata needs your own IGDB credentials below.
+            </p>
+          )}
           <p className={styles.groupDescription}>
             Optional. Enriches your library with IGDB details, ratings, screenshots and box art. Get a Client ID and
             Secret from a{" "}
@@ -228,32 +237,81 @@ function MetadataFields({
   );
 }
 
-function WervikAccountFields() {
+function WervikAccountFields({ onNavigate }: { onNavigate: (category: Category) => void }) {
   const { account, connecting, error, connect, disconnect } = useWervikAccount();
 
-  return (
-    <>
-      <p className={styles.groupDescription}>
-        Connect this Wervik installation to your Wergely account. Your local library stays on this computer for now.
-      </p>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>{account ? account.name : "Not connected"}</div>
-          <div className={styles.rowDescription}>
-            {account ? account.email : "Sign in in your browser to connect this installation."}
+  if (account) {
+    return (
+      <>
+        <p className={styles.groupDescription}>
+          Connected — Steam ownership, achievements and metadata are handled automatically, and your settings sync
+          to any other installation you connect with the same account. Your game library itself stays on this
+          computer.
+        </p>
+        <div className={styles.row}>
+          <div>
+            <div className={styles.rowLabel}>{account.name}</div>
+            <div className={styles.rowDescription}>{account.email}</div>
+            {error && <div className={styles.statusMessageError}>{error}</div>}
           </div>
-          {error && <div className={styles.statusMessageError}>{error}</div>}
-        </div>
-        {account ? (
           <button type="button" className={styles.rescanButton} data-nav-item onClick={disconnect}>
             Disconnect
           </button>
-        ) : (
-          <button type="button" className={styles.rescanButton} data-nav-item onClick={connect} disabled={connecting}>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <p className={styles.groupDescription}>Choose how Wervik gets game data and, optionally, integrations.</p>
+      {error && <div className={styles.statusMessageError}>{error}</div>}
+      <div className={styles.accountChoices}>
+        <div className={styles.accountCard}>
+          <div className={styles.accountCardHeader}>
+            <div className={styles.accountCardTitle}>No Wervik Account</div>
+            <div className={styles.accountCardBadge}>Current</div>
+          </div>
+          <p className={styles.accountCardDescription}>Nothing ever leaves this computer.</p>
+          <ul className={styles.accountCardList}>
+            <li>
+              Set up IGDB yourself (Client ID/Secret) on the{" "}
+              <button type="button" className={styles.accountCardLink} data-nav-item onClick={() => onNavigate("metadata")}>
+                Metadata
+              </button>{" "}
+              tab for details, ratings and box art
+            </li>
+            <li>
+              Set up a Steam Web API key yourself on the{" "}
+              <button type="button" className={styles.accountCardLink} data-nav-item onClick={() => onNavigate("steam")}>
+                Steam
+              </button>{" "}
+              tab for owned games and achievements
+            </li>
+          </ul>
+        </div>
+        <div className={styles.accountCard}>
+          <div className={styles.accountCardHeader}>
+            <div className={styles.accountCardTitle}>Connect Wervik Account</div>
+          </div>
+          <p className={styles.accountCardDescription}>Sign in in your browser to connect this installation.</p>
+          <ul className={styles.accountCardList}>
+            <li>Native Steam integration — owned games and achievements, no Web API key to generate</li>
+            <li>Metadata via Wervik — no IGDB credentials to set up</li>
+            <li>Settings sync automatically to any other installation on this same account</li>
+            <li>Your game library itself still stays only on this computer</li>
+          </ul>
+          <button
+            type="button"
+            className={`${styles.rescanButton} ${styles.accountCardButton}`}
+            data-nav-item
+            onClick={connect}
+            disabled={connecting}
+          >
             {connecting && <Spinner />}
             {connecting ? "Waiting for login…" : "Connect"}
           </button>
-        )}
+        </div>
       </div>
     </>
   );
@@ -496,10 +554,13 @@ function NativeAchievementsSection({
 function SteamAchievementsFields({
   settings,
   onUpdateSettings,
+  onNavigate,
 }: {
   settings: SettingsType | null;
   onUpdateSettings: (partial: Partial<SettingsType>) => void;
+  onNavigate: (category: Category) => void;
 }) {
+  const { account } = useWervikAccount();
   const [apiKey, setApiKey] = useState(settings?.steamApiKey ?? "");
   const [steamId64Override, setSteamId64Override] = useState(settings?.steamId64Override ?? "");
   const [revealApiKey, setRevealApiKey] = useState(false);
@@ -512,7 +573,7 @@ function SteamAchievementsFields({
   const dirty =
     apiKey.trim() !== (settings?.steamApiKey ?? "") ||
     steamId64Override.trim() !== (settings?.steamId64Override ?? "");
-  const configured = !!settings?.steamApiKey;
+  const configured = account || !!settings?.steamApiKey;
 
   function save() {
     onUpdateSettings({ steamApiKey: apiKey.trim(), steamId64Override: steamId64Override.trim() });
@@ -521,41 +582,62 @@ function SteamAchievementsFields({
   return (
     <>
       <p className={styles.groupDescription}>
-        Optional. In addition to achievements, this lets Wervik show games owned by your Steam account even when
-        they are not installed yet. Get a Web API key from your{" "}
-        <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noreferrer">
-          Steam API key page
-        </a>
-        . Steam may return an empty owned-games list unless your profile's "Game details" privacy is Public — that's
-        a Steam setting, not something Wervik can change for you.
+        In addition to achievements, this lets Wervik show games owned by your Steam account even when they are not
+        installed yet.{" "}
+        {account
+          ? "Handled automatically by your connected Wervik Account — no key to generate."
+          : (
+            <>
+              Optional. Get a Web API key from your{" "}
+              <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noreferrer">
+                Steam API key page
+              </a>
+              , or{" "}
+              <button type="button" className={styles.accountCardLink} data-nav-item onClick={() => onNavigate("account")}>
+                connect a Wervik Account
+              </button>{" "}
+              instead.
+            </>
+          )}{" "}
+        Steam may return an empty owned-games list unless your profile's "Game details" privacy is Public — that's a
+        Steam setting, not something Wervik can change for you.
       </p>
-      <div className={styles.row}>
-        <div>
-          <div className={styles.rowLabel}>Web API Key</div>
-          <div className={styles.rowDescription}>Stored locally — only ever sent to Steam's own API.</div>
+      {account ? (
+        <div className={styles.row}>
+          <div>
+            <div className={styles.rowLabel}>Web API access</div>
+            <div className={styles.rowDescription}>Managed by your connected Wervik Account.</div>
+          </div>
         </div>
-        <div className={styles.secretField}>
-          <input
-            className={styles.textInput}
-            type={revealApiKey ? "text" : "password"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Web API Key"
-            spellCheck={false}
-            data-nav-item
-          />
-          <button
-            type="button"
-            className={styles.revealButton}
-            data-nav-item
-            onClick={() => setRevealApiKey((v) => !v)}
-            aria-label={revealApiKey ? "Hide API key" : "Show API key"}
-            title={revealApiKey ? "Hide API key" : "Show API key"}
-          >
-            {revealApiKey ? "🙈" : "👁"}
-          </button>
+      ) : (
+        <div className={styles.row}>
+          <div>
+            <div className={styles.rowLabel}>Web API Key</div>
+            <div className={styles.rowDescription}>Stored locally — only ever sent to Steam's own API.</div>
+          </div>
+          <div className={styles.secretField}>
+            <input
+              className={styles.textInput}
+              type={revealApiKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Web API Key"
+              spellCheck={false}
+              data-nav-item
+            />
+            <button
+              type="button"
+              className={styles.revealButton}
+              data-nav-item
+              onClick={() => setRevealApiKey((v) => !v)}
+              aria-label={revealApiKey ? "Hide API key" : "Show API key"}
+              title={revealApiKey ? "Hide API key" : "Show API key"}
+            >
+              {revealApiKey ? "🙈" : "👁"}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
       <div className={styles.row}>
         <div>
           <div className={styles.rowLabel}>SteamID64 override</div>
@@ -695,9 +777,9 @@ export function Settings({
 
         <div className={styles.content}>
           {category === "account" && (
-            <div className={styles.group}>
+            <div className={`${styles.group} ${styles.accountGroup}`}>
               <p className={styles.groupTitle}>Wervik Account</p>
-              <WervikAccountFields />
+              <WervikAccountFields onNavigate={setCategory} />
             </div>
           )}
 
@@ -742,7 +824,7 @@ export function Settings({
               <p className={styles.groupTitle} style={{ marginTop: 28 }}>
                 Achievements
               </p>
-              <SteamAchievementsFields settings={settings} onUpdateSettings={onUpdateSettings} />
+              <SteamAchievementsFields settings={settings} onUpdateSettings={onUpdateSettings} onNavigate={setCategory} />
             </div>
           )}
 
@@ -904,7 +986,7 @@ export function Settings({
           {category === "metadata" && (
             <div className={styles.group}>
               <p className={styles.groupTitle}>Metadata</p>
-              <MetadataFields settings={settings} onUpdateSettings={onUpdateSettings} />
+              <MetadataFields settings={settings} onUpdateSettings={onUpdateSettings} onNavigate={setCategory} />
             </div>
           )}
 

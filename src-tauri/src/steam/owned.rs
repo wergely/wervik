@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ureq::Agent;
 
+use super::SteamCredentials;
 use crate::commands::AppStateHandle;
 
 const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 12;
+const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +190,53 @@ fn fetch_owned_games(api_key: &str, steam_id64: &str) -> Result<Vec<OwnedGame>, 
     Ok(games)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WervikOwnedGamesRequest<'a> {
+    steam_id64: &'a str,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct WervikOwnedGamesResponse {
+    #[serde(default)]
+    games: Vec<OwnedGame>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+/// Same request as `fetch_owned_games`, but through Wervik's own proxy —
+/// available once a Wervik Account is connected, using Wervik's own Steam Web
+/// API key instead of one the user has to generate and paste in Settings.
+fn fetch_owned_games_from_wervik(
+    access_token: &str,
+    steam_id64: &str,
+) -> Result<Vec<OwnedGame>, String> {
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url = url::Url::parse(&configured_base)
+        .map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    url.set_path("/api/steam/owned-games");
+
+    let mut response = new_agent()
+        .post(url.as_str())
+        .header("Authorization", &format!("Bearer {access_token}"))
+        .send_json(&WervikOwnedGamesRequest { steam_id64 })
+        .map_err(|error| format!("Wervik Steam owned games request failed: {error}"))?;
+    let response = response
+        .body_mut()
+        .read_json::<WervikOwnedGamesResponse>()
+        .map_err(|error| format!("Could not read the Wervik Steam owned games response: {error}"))?;
+    if let Some(error) = response.error {
+        return Err(response.message.unwrap_or(error));
+    }
+
+    let mut games = response.games;
+    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(games)
+}
+
 /// Steam's store artwork is public and can be loaded directly by the
 /// frontend. The icon URL in `OwnedGame` remains a fallback for apps without
 /// a library portrait.
@@ -203,12 +252,16 @@ pub fn hero_url(app_id: u32) -> String {
     )
 }
 
-fn configuration_changed(app_handle: &AppHandle, api_key: &str, steam_id64: &str) -> bool {
+fn configuration_changed(
+    app_handle: &AppHandle,
+    credentials: &SteamCredentials,
+    steam_id64: &str,
+) -> bool {
     app_handle
         .try_state::<AppStateHandle>()
         .map(|state| {
             let state = state.lock().unwrap_or_else(|error| error.into_inner());
-            state.store.settings().steam_api_key.trim() != api_key
+            state.steam_credentials().as_ref() != Some(credentials)
                 || state.steam_id64().as_deref() != Some(steam_id64)
         })
         .unwrap_or(false)
@@ -219,12 +272,11 @@ fn configuration_changed(app_handle: &AppHandle, api_key: &str, steam_id64: &str
 /// not wait for this network request.
 pub fn spawn_fetch(
     app_handle: AppHandle,
-    api_key: String,
+    credentials: SteamCredentials,
     steam_id64: String,
     running: Arc<AtomicBool>,
 ) {
-    if api_key.trim().is_empty()
-        || steam_id64.trim().is_empty()
+    if steam_id64.trim().is_empty()
         || running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -233,8 +285,13 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
-        let result = fetch_owned_games(&api_key, &steam_id64);
-        let changed = configuration_changed(&app_handle, &api_key, &steam_id64);
+        let result = match &credentials {
+            SteamCredentials::Manual(api_key) => fetch_owned_games(api_key, &steam_id64),
+            SteamCredentials::Wervik(access_token) => {
+                fetch_owned_games_from_wervik(access_token, &steam_id64)
+            }
+        };
+        let changed = configuration_changed(&app_handle, &credentials, &steam_id64);
         let mut restart = false;
         if let Some(state_handle) = app_handle.try_state::<AppStateHandle>() {
             let mut state = state_handle

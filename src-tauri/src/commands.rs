@@ -32,6 +32,7 @@ use crate::steam::launch;
 use crate::steam::launch_options;
 use crate::steam::library::{self, Game};
 use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
+use crate::steam::SteamCredentials;
 use crate::storage::{
     MetadataProvider, PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount,
 };
@@ -230,14 +231,32 @@ impl AppState {
         steam_achievements::detect_steam_id64(&self.steam_install.as_ref()?.root)
     }
 
-    pub(crate) fn start_steam_achievements_fetch(&mut self) {
+    /// Which Steam Web API credentials are currently in effect: a connected
+    /// Wervik Account always wins (it needs no key from the user at all —
+    /// see `SteamCredentials`), falling back to the manual key from Settings,
+    /// or `None` when neither is configured.
+    pub(crate) fn steam_credentials(&self) -> Option<SteamCredentials> {
+        if let Some(account) = self.store.wervik_account() {
+            let token = account.access_token.trim();
+            if !token.is_empty() {
+                return Some(SteamCredentials::Wervik(token.to_string()));
+            }
+        }
         let settings = self.store.settings();
+        let api_key = settings.steam_api_key.trim();
+        (!api_key.is_empty()).then(|| SteamCredentials::Manual(api_key.to_string()))
+    }
+
+    pub(crate) fn start_steam_achievements_fetch(&mut self) {
         let steam_id64 = self.steam_id64();
         if let Some(steam_id64) = steam_id64.as_deref() {
             if let Err(error) = self.steam_achievements_cache.select_account(steam_id64) {
                 eprintln!("Could not select the Steam achievements account: {error}");
             }
         }
+        let Some(credentials) = self.steam_credentials() else {
+            return;
+        };
         let app_ids = self
             .games
             .iter()
@@ -246,7 +265,7 @@ impl AppState {
         steam_achievements::spawn_fetch(
             self.app_handle.clone(),
             app_ids,
-            settings.steam_api_key.trim().to_string(),
+            credentials,
             steam_id64,
             self.steam_achievements_fetch_running.clone(),
         );
@@ -265,19 +284,20 @@ impl AppState {
             Vec::new()
         };
 
-        let settings = self.store.settings();
+        let Some(credentials) = self.steam_credentials() else {
+            return;
+        };
         if let Some(steam_id64) = steam_id64 {
-            if settings.steam_api_key.trim().is_empty()
-                || self
-                    .steam_owned_games_cache
-                    .get_fresh(&steam_id64)
-                    .is_some()
+            if self
+                .steam_owned_games_cache
+                .get_fresh(&steam_id64)
+                .is_some()
             {
                 return;
             }
             owned::spawn_fetch(
                 self.app_handle.clone(),
-                settings.steam_api_key.trim().to_string(),
+                credentials,
                 steam_id64,
                 self.steam_owned_games_fetch_running.clone(),
             );
@@ -1122,8 +1142,8 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
         });
     }
     let steam_achievements_account = state.steam_id64();
-    let steam_achievements_enabled = !state.store.settings().steam_api_key.trim().is_empty()
-        && steam_achievements_account.is_some();
+    let steam_achievements_enabled =
+        state.steam_credentials().is_some() && steam_achievements_account.is_some();
 
     let installed_steam_ids: HashSet<u32> = state.games.iter().map(|game| game.app_id).collect();
     let mut games: Vec<GameDto> = state
@@ -1467,7 +1487,7 @@ pub fn get_steam_achievements(
     game_id: String,
     force: bool,
 ) -> Result<Option<steam_achievements::GameAchievements>, String> {
-    let (app_id, api_key, steam_id64, fresh, stale) = {
+    let (app_id, credentials, steam_id64, fresh, stale) = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(app_id) = state
             .games
@@ -1477,7 +1497,7 @@ pub fn get_steam_achievements(
         else {
             return Ok(None);
         };
-        let settings = state.store.settings();
+        let credentials = state.steam_credentials();
         let steam_id64 = state.steam_id64();
         if let Some(steam_id64) = steam_id64.as_deref() {
             state.steam_achievements_cache.select_account(steam_id64)?;
@@ -1488,27 +1508,21 @@ pub fn get_steam_achievements(
         let stale = steam_id64
             .as_deref()
             .and_then(|id| state.steam_achievements_cache.get(&game_id, id));
-        (
-            app_id,
-            settings.steam_api_key.trim().to_string(),
-            steam_id64,
-            fresh,
-            stale,
-        )
+        (app_id, credentials, steam_id64, fresh, stale)
     };
     let Some(steam_id64) = steam_id64.filter(|id| !id.trim().is_empty()) else {
         return Ok(None);
     };
-    if api_key.trim().is_empty() {
+    let Some(credentials) = credentials else {
         return Ok(None);
-    }
+    };
     if !force {
         if let Some(achievements) = fresh {
             return Ok(Some(achievements));
         }
     }
 
-    match steam_achievements::fetch_for_game(&api_key, &steam_id64, app_id) {
+    match steam_achievements::fetch_for_game(&credentials, &steam_id64, app_id) {
         Ok(Some(achievements)) => {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state
@@ -2958,9 +2972,22 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         match result {
             Ok(account) => {
-                let settings = state.store.settings();
+                let mut settings = state.store.settings();
                 state.store.set_wervik_account(account.clone());
+                // A fresh connection with no IGDB credentials of its own gets
+                // Wervik metadata "for free", matching what Settings promises
+                // before connecting. A deliberately configured IGDB client
+                // stays untouched — connecting an account never overrides it.
+                if settings.metadata_provider == MetadataProvider::Igdb
+                    && (settings.igdb_client_id.trim().is_empty()
+                        || settings.igdb_client_secret.trim().is_empty())
+                {
+                    settings.metadata_provider = MetadataProvider::Wervik;
+                    state.store.set_settings(settings.clone());
+                }
                 state.start_metadata_fetch();
+                state.start_steam_owned_fetch();
+                state.start_steam_achievements_fetch();
                 drop(state);
                 if let Err(error) = sync_wervik_settings(&account, &settings) {
                     let _ = app.emit(WERVIK_SETTINGS_SYNC_ERROR_EVENT, error);
@@ -3033,6 +3060,8 @@ pub fn disconnect_wervik_account(state: State<AppStateHandle>) -> Result<(), Str
     }
     state.store.clear_wervik_account();
     state.start_metadata_fetch();
+    state.start_steam_owned_fetch();
+    state.start_steam_achievements_fetch();
     Ok(())
 }
 
