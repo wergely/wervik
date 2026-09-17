@@ -67,6 +67,11 @@ pub struct AppState {
     pub steam_owned_games_fetch_running: Arc<AtomicBool>,
     pub metadata_fetch_running: Arc<AtomicBool>,
     pub metadata_progress: Arc<metadata::MetadataProgressState>,
+    /// Guards one metadata lookup per game id. The foreground detail view and
+    /// the background sweep can request the same game at the same time; this
+    /// prevents their downloads from racing while writing the same artwork
+    /// files and cache entry.
+    pub metadata_requests: HashMap<String, usize>,
     /// Invalidates in-flight metadata work when credentials, the selected
     /// provider, or a per-game manual refresh changes the active request.
     pub metadata_fetch_generation: Arc<AtomicUsize>,
@@ -97,6 +102,10 @@ pub struct AppState {
     /// local cache updates arrive close together.
     pub cloud_sync_running: Arc<AtomicBool>,
     pub cloud_sync_requested: Arc<AtomicBool>,
+    /// Separates library/metadata uploads from achievement uploads so a
+    /// metadata sweep never causes the full achievement set to be resent.
+    pub cloud_sync_library_requested: Arc<AtomicBool>,
+    pub cloud_sync_achievements_requested: Arc<AtomicBool>,
     /// Invalidates cloud uploads when the connected account changes.
     pub wervik_sync_generation: Arc<AtomicUsize>,
 }
@@ -559,7 +568,7 @@ impl AppState {
                 state.start_metadata_fetch();
                 state.start_achievements_fetch();
             }
-            schedule_wervik_cloud_sync(&app_handle);
+            schedule_wervik_library_sync(&app_handle);
             running.store(false, Ordering::SeqCst);
             let _ = app_handle.emit("rom-scan-status", false);
         });
@@ -783,7 +792,7 @@ pub(crate) fn finish_playtime_session(app_handle: &tauri::AppHandle, session_id:
     let game_id = finished.game_id.clone();
     drop(state);
     let _ = app_handle.emit("playtime-updated", &game_id);
-    schedule_wervik_cloud_sync(app_handle);
+    schedule_wervik_library_sync(app_handle);
 }
 
 /// Where a game came from. The frontend uses this to label/filter games and
@@ -1461,6 +1470,115 @@ pub fn get_game_screenshot_paths(
     Ok(paths)
 }
 
+pub(crate) fn claim_metadata_request(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+    generation_id: usize,
+) -> bool {
+    let Some(state_handle) = app_handle.try_state::<AppStateHandle>() else {
+        return false;
+    };
+    let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+    if state.metadata_requests.contains_key(game_id) {
+        return false;
+    }
+    state
+        .metadata_requests
+        .insert(game_id.to_string(), generation_id);
+    true
+}
+
+pub(crate) fn metadata_request_generation(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+) -> Option<usize> {
+    app_handle
+        .try_state::<AppStateHandle>()
+        .and_then(|state_handle| {
+            state_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .metadata_requests
+                .get(game_id)
+                .copied()
+        })
+}
+
+pub(crate) struct MetadataRequestGuard {
+    app_handle: tauri::AppHandle,
+    game_id: String,
+    generation_id: usize,
+}
+
+impl Drop for MetadataRequestGuard {
+    fn drop(&mut self) {
+        release_metadata_request(&self.app_handle, &self.game_id, self.generation_id);
+    }
+}
+
+pub(crate) fn start_metadata_request(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+    generation_id: usize,
+) -> Option<MetadataRequestGuard> {
+    claim_metadata_request(app_handle, game_id, generation_id).then(|| MetadataRequestGuard {
+        app_handle: app_handle.clone(),
+        game_id: game_id.to_string(),
+        generation_id,
+    })
+}
+
+pub(crate) fn release_metadata_request(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+    generation_id: usize,
+) {
+    let Some(state_handle) = app_handle.try_state::<AppStateHandle>() else {
+        return;
+    };
+    let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+    if state
+        .metadata_requests
+        .get(game_id)
+        .is_some_and(|active_generation| *active_generation == generation_id)
+    {
+        state.metadata_requests.remove(game_id);
+    }
+}
+
+pub(crate) fn wait_for_metadata_request(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+) -> (Option<GameMetadata>, bool) {
+    // A Wervik request has a 12-second network timeout plus artwork downloads.
+    // Give the owner enough time to finish, while still preventing a broken
+    // worker from leaving the detail view waiting forever.
+    for _ in 0..600 {
+        let Some(state_handle) = app_handle.try_state::<AppStateHandle>() else {
+            return (None, false);
+        };
+        let (metadata, pending) = {
+            let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.metadata_cache.get(game_id),
+                state.metadata_requests.contains_key(game_id),
+            )
+        };
+        if metadata.is_some() || !pending {
+            return (metadata, false);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let Some(state_handle) = app_handle.try_state::<AppStateHandle>() else {
+        return (None, false);
+    };
+    let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+    (
+        state.metadata_cache.get(game_id),
+        state.metadata_requests.contains_key(game_id),
+    )
+}
+
 /// Shared tail of `get_game_metadata` and `refresh_game_metadata`: runs the
 /// selected metadata lookup and records either the result or a miss in the cache.
 /// Callers are responsible for anything that has to happen *before* the
@@ -1477,6 +1595,27 @@ fn fetch_and_store_metadata(
     generation: &AtomicUsize,
     generation_id: usize,
 ) -> Result<Option<GameMetadata>, String> {
+    let app_handle = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .app_handle
+        .clone();
+    let _request_guard = loop {
+        if let Some(request_guard) = start_metadata_request(&app_handle, &game_id, generation_id) {
+            break request_guard;
+        }
+        let active_generation = metadata_request_generation(&app_handle, &game_id);
+        let (metadata, pending) = wait_for_metadata_request(&app_handle, &game_id);
+        if active_generation == Some(generation_id) || metadata.is_some() {
+            return Ok(metadata);
+        }
+        if generation.load(Ordering::SeqCst) != generation_id {
+            return Err("Metadata lookup was superseded by a newer request".into());
+        }
+        if pending {
+            return Err("Metadata lookup is still in progress".into());
+        }
+    };
     let Some(metadata) = metadata::fetch_game(
         app_data_dir,
         &game_id,
@@ -1530,7 +1669,7 @@ fn fetch_and_store_metadata(
     let app_handle = state.app_handle.clone();
     let _ = app_handle.emit("metadata-updated", &game_id);
     drop(state);
-    schedule_wervik_cloud_sync(&app_handle);
+    schedule_wervik_library_sync(&app_handle);
     Ok(Some(metadata))
 }
 
@@ -1619,7 +1758,14 @@ pub fn refresh_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (app_data_dir, lookup_name, settings, wervik_access_token, metadata_generation, generation_id) = {
+    let (
+        app_data_dir,
+        lookup_name,
+        settings,
+        wervik_access_token,
+        metadata_generation,
+        generation_id,
+    ) = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let generation_id = state
             .metadata_fetch_generation
@@ -1745,7 +1891,7 @@ pub fn get_retro_achievements(
                 .put(game_id, achievements.clone())?;
             let app_handle = state.app_handle.clone();
             drop(state);
-            schedule_wervik_cloud_sync(&app_handle);
+            schedule_wervik_achievements_sync(&app_handle);
             Ok(Some(achievements))
         }
         Ok(None) => Ok(None),
@@ -1808,7 +1954,7 @@ pub fn get_steam_achievements(
                 .put(game_id, &steam_id64, achievements.clone())?;
             let app_handle = state.app_handle.clone();
             drop(state);
-            schedule_wervik_cloud_sync(&app_handle);
+            schedule_wervik_achievements_sync(&app_handle);
             Ok(Some(achievements))
         }
         Ok(None) => {
@@ -2023,7 +2169,7 @@ pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
     let app_handle = state.app_handle.clone();
     let snapshot = library_snapshot(&state);
     drop(state);
-    schedule_wervik_cloud_sync(&app_handle);
+    schedule_wervik_library_sync(&app_handle);
     snapshot
 }
 
@@ -2731,7 +2877,7 @@ pub fn set_favorite(state: State<AppStateHandle>, id: String, favorite: bool) {
     state.store.set_favorite(&id, favorite);
     let app_handle = state.app_handle.clone();
     drop(state);
-    schedule_wervik_cloud_sync(&app_handle);
+    schedule_wervik_library_sync(&app_handle);
 }
 
 /// Stores a local like/dislike preference for a game. Passing `null` clears
@@ -2752,7 +2898,7 @@ pub fn set_game_reaction(
     state.store.set_game_reaction(&id, reaction);
     let app_handle = state.app_handle.clone();
     drop(state);
-    schedule_wervik_cloud_sync(&app_handle);
+    schedule_wervik_library_sync(&app_handle);
     Ok(())
 }
 
@@ -3144,107 +3290,126 @@ fn game_source_name(source: GameSource) -> &'static str {
 
 fn build_wervik_cloud_sync_payload(
     state: &AppState,
+    sync_library: bool,
+    sync_achievements: bool,
 ) -> Option<(WervikAccount, WervikCloudSyncPayload)> {
     let account = state
         .store
         .wervik_account()
         .filter(|account| !account.access_token.trim().is_empty())?;
     let snapshot = library_snapshot(state);
-    let game_lookup: HashMap<(String, String), &GameDto> = snapshot
-        .games
-        .iter()
-        .map(|game| {
-            (
-                (game_source_name(game.source).to_string(), game.id.clone()),
-                game,
+    let game_lookup: HashMap<(String, String), &GameDto> = if sync_achievements {
+        snapshot
+            .games
+            .iter()
+            .map(|game| {
+                (
+                    (game_source_name(game.source).to_string(), game.id.clone()),
+                    game,
+                )
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    let library = if sync_library {
+        snapshot
+            .games
+            .iter()
+            .map(|game| {
+                let playtime_seconds = state
+                    .playtime
+                    .summary(&game.id)
+                    .ok()
+                    .flatten()
+                    .map(|summary| summary.total_seconds)
+                    .unwrap_or_else(|| game.playtime_minutes.unwrap_or(0).saturating_mul(60));
+                WervikCloudLibraryGame {
+                    source: game_source_name(game.source).to_string(),
+                    source_game_id: game.id.clone(),
+                    igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
+                    name: game.name.clone(),
+                    platform: game.platform.clone(),
+                    platform_key: game.platform_key.clone(),
+                    is_installed: game.is_installed,
+                    is_favorite: game.is_favorite,
+                    reaction: game.reaction.clone(),
+                    playtime_seconds,
+                    last_played: game.last_played,
+                    achievement_completion_percent: game.achievement_completion_percent,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let playtime = if sync_library {
+        state
+            .playtime
+            .finished_sessions()
+            .unwrap_or_default()
+            .into_iter()
+            .map(
+                |session: FinishedSessionRecord| WervikCloudPlaytimeSession {
+                    local_session_id: session.session_id,
+                    source: session.source,
+                    source_game_id: session.game_id,
+                    started_at: session.started_at,
+                    ended_at: session.ended_at,
+                    duration_seconds: session.duration_seconds,
+                },
             )
-        })
-        .collect();
+            .collect()
+    } else {
+        Vec::new()
+    };
 
-    let library = snapshot
-        .games
-        .iter()
-        .map(|game| {
-            let playtime_seconds = state
-                .playtime
-                .summary(&game.id)
-                .ok()
-                .flatten()
-                .map(|summary| summary.total_seconds)
-                .unwrap_or_else(|| game.playtime_minutes.unwrap_or(0).saturating_mul(60));
-            WervikCloudLibraryGame {
-                source: game_source_name(game.source).to_string(),
-                source_game_id: game.id.clone(),
-                igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
-                name: game.name.clone(),
-                platform: game.platform.clone(),
-                platform_key: game.platform_key.clone(),
-                is_installed: game.is_installed,
-                is_favorite: game.is_favorite,
-                reaction: game.reaction.clone(),
-                playtime_seconds,
-                last_played: game.last_played,
-                achievement_completion_percent: game.achievement_completion_percent,
-            }
-        })
-        .collect();
-
-    let playtime = state
-        .playtime
-        .finished_sessions()
-        .unwrap_or_default()
-        .into_iter()
-        .map(
-            |session: FinishedSessionRecord| WervikCloudPlaytimeSession {
-                local_session_id: session.session_id,
-                source: session.source,
-                source_game_id: session.game_id,
-                started_at: session.started_at,
-                ended_at: session.ended_at,
-                duration_seconds: session.duration_seconds,
-            },
-        )
-        .collect();
-
-    let mut achievements = Vec::new();
-    for (game_id, game_achievements, fetched_at) in state.retro_achievements_cache.snapshots() {
-        let Some(game) = game_lookup.get(&("retro".to_string(), game_id.clone())) else {
-            continue;
-        };
-        let Ok(payload) = serde_json::to_value(game_achievements) else {
-            continue;
-        };
-        achievements.push(WervikCloudAchievementSnapshot {
-            source: "retro".to_string(),
-            source_game_id: game_id,
-            igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
-            name: game.name.clone(),
-            platform: game.platform.clone(),
-            payload,
-            fetched_at,
-        });
-    }
-    if let Some(steam_id64) = state.steam_id64() {
-        for (game_id, game_achievements, fetched_at) in
-            state.steam_achievements_cache.snapshots(&steam_id64)
-        {
-            let Some(game) = game_lookup.get(&("steam".to_string(), game_id.clone())) else {
+    let achievements = if sync_achievements {
+        let mut achievements = Vec::new();
+        for (game_id, game_achievements, fetched_at) in state.retro_achievements_cache.snapshots() {
+            let Some(game) = game_lookup.get(&("retro".to_string(), game_id.clone())) else {
                 continue;
             };
             let Ok(payload) = serde_json::to_value(game_achievements) else {
                 continue;
             };
             achievements.push(WervikCloudAchievementSnapshot {
-                source: "steam".to_string(),
+                source: "retro".to_string(),
                 source_game_id: game_id,
                 igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
                 name: game.name.clone(),
-                platform: None,
+                platform: game.platform.clone(),
                 payload,
                 fetched_at,
             });
         }
-    }
+        if let Some(steam_id64) = state.steam_id64() {
+            for (game_id, game_achievements, fetched_at) in
+                state.steam_achievements_cache.snapshots(&steam_id64)
+            {
+                let Some(game) = game_lookup.get(&("steam".to_string(), game_id.clone())) else {
+                    continue;
+                };
+                let Ok(payload) = serde_json::to_value(game_achievements) else {
+                    continue;
+                };
+                achievements.push(WervikCloudAchievementSnapshot {
+                    source: "steam".to_string(),
+                    source_game_id: game_id,
+                    igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
+                    name: game.name.clone(),
+                    platform: None,
+                    payload,
+                    fetched_at,
+                });
+            }
+        }
+        achievements
+    } else {
+        Vec::new()
+    };
 
     Some((
         account,
@@ -3281,6 +3446,8 @@ fn sync_wervik_cloud(
     payload: &WervikCloudSyncPayload,
     generation: &AtomicUsize,
     generation_id: usize,
+    sync_library: bool,
+    sync_achievements: bool,
 ) -> Result<(), String> {
     if generation.load(Ordering::SeqCst) != generation_id {
         return Ok(());
@@ -3296,79 +3463,72 @@ fn sync_wervik_cloud(
     if generation.load(Ordering::SeqCst) != generation_id {
         return Ok(());
     }
-    post_wervik_sync(
-        &agent,
-        &base_url,
-        account,
-        "/api/sync/library",
-        &payload.library,
-    )?;
-    for sessions in payload.playtime.sessions.chunks(1_000) {
-        if generation.load(Ordering::SeqCst) != generation_id {
-            return Ok(());
-        }
+    if sync_library {
         post_wervik_sync(
             &agent,
             &base_url,
             account,
-            "/api/sync/playtime",
-            WervikCloudPlaytimeRequest {
-                sessions: sessions.to_vec(),
-            },
+            "/api/sync/library",
+            &payload.library,
         )?;
+        for sessions in payload.playtime.sessions.chunks(1_000) {
+            if generation.load(Ordering::SeqCst) != generation_id {
+                return Ok(());
+            }
+            post_wervik_sync(
+                &agent,
+                &base_url,
+                account,
+                "/api/sync/playtime",
+                WervikCloudPlaytimeRequest {
+                    sessions: sessions.to_vec(),
+                },
+            )?;
+        }
     }
-    for (index, snapshots) in payload.achievements.snapshots.chunks(50).enumerate() {
-        if generation.load(Ordering::SeqCst) != generation_id {
-            return Ok(());
+    if sync_achievements {
+        for (index, snapshots) in payload.achievements.snapshots.chunks(50).enumerate() {
+            if generation.load(Ordering::SeqCst) != generation_id {
+                return Ok(());
+            }
+            post_wervik_sync(
+                &agent,
+                &base_url,
+                account,
+                "/api/sync/achievements",
+                WervikCloudAchievementsRequest {
+                    replace: index == 0,
+                    snapshots: snapshots.to_vec(),
+                },
+            )?;
         }
-        post_wervik_sync(
-            &agent,
-            &base_url,
-            account,
-            "/api/sync/achievements",
-            WervikCloudAchievementsRequest {
-                replace: index == 0,
-                snapshots: snapshots.to_vec(),
-            },
-        )?;
-    }
-    if payload.achievements.snapshots.is_empty() {
-        if generation.load(Ordering::SeqCst) != generation_id {
-            return Ok(());
+        if payload.achievements.snapshots.is_empty() {
+            if generation.load(Ordering::SeqCst) != generation_id {
+                return Ok(());
+            }
+            post_wervik_sync(
+                &agent,
+                &base_url,
+                account,
+                "/api/sync/achievements",
+                WervikCloudAchievementsRequest {
+                    replace: true,
+                    snapshots: Vec::new(),
+                },
+            )?;
         }
-        post_wervik_sync(
-            &agent,
-            &base_url,
-            account,
-            "/api/sync/achievements",
-            WervikCloudAchievementsRequest {
-                replace: true,
-                snapshots: Vec::new(),
-            },
-        )?;
     }
     Ok(())
 }
 
-pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
-    let Some(state_handle) = app.try_state::<AppStateHandle>() else {
-        return;
-    };
-    let (running, requested, generation) = {
-        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(account) = state.store.wervik_account() else {
-            return;
-        };
-        if account.access_token.trim().is_empty() {
-            return;
-        }
-        state.cloud_sync_requested.store(true, Ordering::SeqCst);
-        (
-            state.cloud_sync_running.clone(),
-            state.cloud_sync_requested.clone(),
-            state.wervik_sync_generation.clone(),
-        )
-    };
+fn start_wervik_cloud_sync(
+    app: &tauri::AppHandle,
+    running: Arc<AtomicBool>,
+    requested: Arc<AtomicBool>,
+    library_requested: Arc<AtomicBool>,
+    achievements_requested: Arc<AtomicBool>,
+    generation: Arc<AtomicUsize>,
+) {
     if running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -3380,19 +3540,28 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         loop {
             requested.store(false, Ordering::SeqCst);
-            let (generation_id, payload) =
-                app.try_state::<AppStateHandle>()
-                    .map_or((0, None), |state_handle| {
-                        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
-                        (
-                            state.wervik_sync_generation.load(Ordering::SeqCst),
-                            build_wervik_cloud_sync_payload(&state),
-                        )
-                    });
+            let (generation_id, payload, sync_library, sync_achievements) = app
+                .try_state::<AppStateHandle>()
+                .map_or((0, None, false, false), |state_handle| {
+                    let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                    let sync_library = library_requested.swap(false, Ordering::SeqCst);
+                    let sync_achievements = achievements_requested.swap(false, Ordering::SeqCst);
+                    (
+                        state.wervik_sync_generation.load(Ordering::SeqCst),
+                        build_wervik_cloud_sync_payload(&state, sync_library, sync_achievements),
+                        sync_library,
+                        sync_achievements,
+                    )
+                });
             if let Some((account, payload)) = payload {
-                if let Err(error) =
-                    sync_wervik_cloud(&account, &payload, &generation, generation_id)
-                {
+                if let Err(error) = sync_wervik_cloud(
+                    &account,
+                    &payload,
+                    &generation,
+                    generation_id,
+                    sync_library,
+                    sync_achievements,
+                ) {
                     if generation.load(Ordering::SeqCst) != generation_id {
                         continue;
                     }
@@ -3412,9 +3581,73 @@ pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
         }
         running.store(false, Ordering::SeqCst);
         if requested.swap(false, Ordering::SeqCst) {
-            schedule_wervik_cloud_sync(&app);
+            start_wervik_cloud_sync(
+                &app,
+                running,
+                requested,
+                library_requested,
+                achievements_requested,
+                generation,
+            );
         }
     });
+}
+
+fn schedule_wervik_cloud_sync_scope(
+    app: &tauri::AppHandle,
+    sync_library: bool,
+    sync_achievements: bool,
+) {
+    let Some(state_handle) = app.try_state::<AppStateHandle>() else {
+        return;
+    };
+    let (running, requested, library_requested, achievements_requested, generation) = {
+        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(account) = state.store.wervik_account() else {
+            return;
+        };
+        if account.access_token.trim().is_empty() {
+            return;
+        }
+        state.cloud_sync_requested.store(true, Ordering::SeqCst);
+        if sync_library {
+            state
+                .cloud_sync_library_requested
+                .store(true, Ordering::SeqCst);
+        }
+        if sync_achievements {
+            state
+                .cloud_sync_achievements_requested
+                .store(true, Ordering::SeqCst);
+        }
+        (
+            state.cloud_sync_running.clone(),
+            state.cloud_sync_requested.clone(),
+            state.cloud_sync_library_requested.clone(),
+            state.cloud_sync_achievements_requested.clone(),
+            state.wervik_sync_generation.clone(),
+        )
+    };
+    start_wervik_cloud_sync(
+        app,
+        running,
+        requested,
+        library_requested,
+        achievements_requested,
+        generation,
+    );
+}
+
+pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
+    schedule_wervik_cloud_sync_scope(app, true, true);
+}
+
+pub(crate) fn schedule_wervik_library_sync(app: &tauri::AppHandle) {
+    schedule_wervik_cloud_sync_scope(app, true, false);
+}
+
+pub(crate) fn schedule_wervik_achievements_sync(app: &tauri::AppHandle) {
+    schedule_wervik_cloud_sync_scope(app, false, true);
 }
 
 pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
@@ -3664,7 +3897,7 @@ pub fn set_settings(
         });
     }
 
-    schedule_wervik_cloud_sync(&app);
+    schedule_wervik_library_sync(&app);
 
     Ok(())
 }

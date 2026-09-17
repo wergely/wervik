@@ -901,11 +901,41 @@ pub fn spawn_fetch(
         progress.done.store(0, Ordering::SeqCst);
         progress.total.store(total, Ordering::SeqCst);
         let _ = app_handle.emit("metadata-progress", MetadataProgress { done: 0, total });
+        let mut updated_any = false;
 
         for game in pending {
             if generation.load(Ordering::SeqCst) != generation_id {
                 break;
             }
+
+            let _request_guard = loop {
+                if let Some(request_guard) =
+                    crate::commands::start_metadata_request(&app_handle, &game.id, generation_id)
+                {
+                    break Some(request_guard);
+                }
+                // A request from this same generation already owns the game.
+                // Its result will be the authoritative one, so this sweep can
+                // leave it alone. A request from an older generation must
+                // finish first, otherwise its artwork could be written after
+                // a refresh cleared the files and be mistaken for the new
+                // result.
+                if crate::commands::metadata_request_generation(&app_handle, &game.id)
+                    == Some(generation_id)
+                {
+                    break None;
+                }
+                let (_, pending) =
+                    crate::commands::wait_for_metadata_request(&app_handle, &game.id);
+                if generation.load(Ordering::SeqCst) != generation_id || pending {
+                    break None;
+                }
+            };
+            let Some(_request_guard) = _request_guard else {
+                let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
+                continue;
+            };
 
             let result = match provider {
                 MetadataProvider::Igdb => {
@@ -967,7 +997,7 @@ pub fn spawn_fetch(
                         }
                     }
                     if updated {
-                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
+                        updated_any = true;
                     }
                 }
                 Ok(None) => {
@@ -990,7 +1020,11 @@ pub fn spawn_fetch(
             }
             std::thread::sleep(IGDB_REQUEST_DELAY);
         }
+        let completed = generation.load(Ordering::SeqCst) == generation_id;
         finish_fetch(&running, &generation, generation_id);
+        if completed && updated_any {
+            crate::commands::schedule_wervik_library_sync(&app_handle);
+        }
     });
 }
 

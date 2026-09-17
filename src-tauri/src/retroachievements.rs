@@ -656,6 +656,7 @@ pub fn spawn_fetch(
             }
         };
         let mut game_lists: HashMap<u32, Vec<RaGameListEntry>> = HashMap::new();
+        let mut updated_any = false;
 
         for query in games
             .into_iter()
@@ -689,7 +690,7 @@ pub fn spawn_fetch(
                         }
                     }
                     if updated {
-                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
+                        updated_any = true;
                     }
                 }
                 Ok(None) => {
@@ -712,6 +713,9 @@ pub fn spawn_fetch(
             std::thread::sleep(SWEEP_REQUEST_DELAY);
         }
         running.store(false, Ordering::SeqCst);
+        if updated_any {
+            crate::commands::schedule_wervik_achievements_sync(&app_handle);
+        }
     });
 }
 

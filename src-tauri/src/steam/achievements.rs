@@ -515,6 +515,7 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
+        let mut updated_any = false;
         for (game_id, app_id) in app_ids
             .into_iter()
             .filter(|(id, _)| !should_skip(&app_handle, id, &credentials, &steam_id64))
@@ -538,7 +539,7 @@ pub fn spawn_fetch(
                         }
                     }
                     if updated {
-                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
+                        updated_any = true;
                     }
                 }
                 Ok(None) => {
@@ -566,6 +567,9 @@ pub fn spawn_fetch(
             std::thread::sleep(SWEEP_REQUEST_DELAY);
         }
         running.store(false, Ordering::SeqCst);
+        if updated_any {
+            crate::commands::schedule_wervik_achievements_sync(&app_handle);
+        }
         // A settings change can race an in-flight HTTP request. The old
         // worker deliberately refuses to write under the new account's
         // cache identity; restart once here so the new configuration is not

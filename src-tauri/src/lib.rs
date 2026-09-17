@@ -121,6 +121,8 @@ pub fn run() {
             let artwork_progress = Arc::new(commands::ArtworkProgressState::default());
             let cloud_sync_running = Arc::new(AtomicBool::new(false));
             let cloud_sync_requested = Arc::new(AtomicBool::new(false));
+            let cloud_sync_library_requested = Arc::new(AtomicBool::new(false));
+            let cloud_sync_achievements_requested = Arc::new(AtomicBool::new(false));
             let wervik_sync_generation = Arc::new(AtomicUsize::new(0));
             // Picks up box art for anything the last scan left uncovered
             // (e.g. Wervik was closed before a previous fetch finished, or
@@ -174,6 +176,7 @@ pub fn run() {
                 steam_owned_games_fetch_running,
                 metadata_fetch_running,
                 metadata_progress,
+                metadata_requests: std::collections::HashMap::new(),
                 metadata_fetch_generation,
                 store,
                 game_setup_dir,
@@ -186,6 +189,8 @@ pub fn run() {
                 artwork_progress,
                 cloud_sync_running,
                 cloud_sync_requested,
+                cloud_sync_library_requested,
+                cloud_sync_achievements_requested,
                 wervik_sync_generation,
             };
             state.seed_provider_playtime();
