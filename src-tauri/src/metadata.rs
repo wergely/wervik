@@ -19,7 +19,6 @@ use crate::commands::AppStateHandle;
 use crate::retro::platform::Platform;
 use crate::storage::MetadataProvider;
 
-const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 24 * 30;
 const MAX_SCREENSHOTS: usize = 4;
 const IGDB_REQUEST_DELAY: Duration = Duration::from_millis(300);
 const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
@@ -112,6 +111,13 @@ impl MetadataCache {
         self.entries.get(game_id).cloned()
     }
 
+    /// A game is considered processed after either a metadata result or a
+    /// recorded miss. Normal library scans never retry processed games;
+    /// callers must remove the entry for an explicit refresh.
+    pub fn is_processed(&self, game_id: &str) -> bool {
+        self.entries.contains_key(game_id) || self.misses.contains_key(game_id)
+    }
+
     /// Every cached entry — used to build the allowlist of image paths
     /// `commands::read_image` may serve (see its doc comment).
     pub fn values(&self) -> impl Iterator<Item = &GameMetadata> {
@@ -128,12 +134,6 @@ impl MetadataCache {
             .collect()
     }
 
-    pub fn recent_miss(&self, game_id: &str) -> bool {
-        self.misses.get(game_id).is_some_and(|fetched_at| {
-            now_unix().saturating_sub(*fetched_at) < CACHE_MAX_AGE_SECONDS
-        })
-    }
-
     pub fn put(&mut self, game_id: String, metadata: GameMetadata) -> Result<(), String> {
         self.misses.remove(&game_id);
         self.entries.insert(game_id, metadata);
@@ -147,8 +147,7 @@ impl MetadataCache {
 
     /// Drops every cached entry and miss so the next metadata fetch starts
     /// clean — used by "Refresh metadata" in Settings so a game that was
-    /// mismatched under old (platform-blind) matching logic gets re-looked-up
-    /// instead of being treated as already fresh.
+    /// mismatched under old (platform-blind) matching logic gets re-looked-up.
     pub fn clear(&mut self) -> Result<(), String> {
         self.entries.clear();
         self.misses.clear();
@@ -163,6 +162,28 @@ impl MetadataCache {
         self.persist()
     }
 
+    /// Carries a processed result over when a ROM's source id changes during
+    /// a folder move. The metadata itself remains untouched; only its local
+    /// cache key changes.
+    pub fn rekey(&mut self, old_id: &str, new_id: &str) -> Result<bool, String> {
+        if old_id == new_id || self.is_processed(new_id) {
+            return Ok(false);
+        }
+        let mut changed = false;
+        if let Some(metadata) = self.entries.remove(old_id) {
+            self.entries.insert(new_id.to_string(), metadata);
+            changed = true;
+        }
+        if let Some(fetched_at) = self.misses.remove(old_id) {
+            self.misses.insert(new_id.to_string(), fetched_at);
+            changed = true;
+        }
+        if changed {
+            self.persist()?;
+        }
+        Ok(changed)
+    }
+
     fn persist(&self) -> Result<(), String> {
         let json = serde_json::to_string_pretty(&MetadataFile {
             entries: self.entries.clone(),
@@ -174,16 +195,6 @@ impl MetadataCache {
         }
         std::fs::write(&self.path, json).map_err(|e| e.to_string())
     }
-}
-
-pub fn is_fresh(metadata: &GameMetadata) -> bool {
-    let now = now_unix();
-    metadata
-        .name
-        .as_deref()
-        .is_some_and(|name| !name.trim().is_empty())
-        && metadata.fetched_at > 0
-        && now.saturating_sub(metadata.fetched_at) < CACHE_MAX_AGE_SECONDS
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,11 +488,7 @@ fn should_skip(app_handle: &AppHandle, game_id: &str) -> bool {
         .try_state::<AppStateHandle>()
         .map(|state| {
             let state = state.lock().unwrap_or_else(|e| e.into_inner());
-            state
-                .metadata_cache
-                .get(game_id)
-                .is_some_and(|cached| is_fresh(&cached))
-                || state.metadata_cache.recent_miss(game_id)
+            state.metadata_cache.is_processed(game_id)
         })
         .unwrap_or(false)
 }
@@ -829,7 +836,7 @@ pub fn spawn_fetch(
 
         let pending: Vec<MetadataQuery> = games
             .into_iter()
-            .filter(|game| !should_skip(&app_handle, &game.id))
+            .filter(|game| force || !should_skip(&app_handle, &game.id))
             .collect();
         let total = pending.len();
         progress.done.store(0, Ordering::SeqCst);
@@ -1004,5 +1011,44 @@ mod tests {
             ),
             Some("https://images.igdb.com/igdb/image/upload/t_cover_big/co123.jpg".into())
         );
+    }
+
+    #[test]
+    fn processed_metadata_does_not_expire_without_an_explicit_refresh() {
+        let path = std::env::temp_dir().join(format!(
+            "wervik-metadata-processed-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut cache = MetadataCache::load(&path);
+        cache
+            .put(
+                "old-game-id".to_string(),
+                GameMetadata {
+                    name: None,
+                    igdb_id: 42,
+                    igdb_url: None,
+                    summary: None,
+                    first_release_date: None,
+                    developers: Vec::new(),
+                    publishers: Vec::new(),
+                    genres: Vec::new(),
+                    platforms: Vec::new(),
+                    rating: None,
+                    rating_count: None,
+                    cover_path: None,
+                    hero_path: None,
+                    screenshot_paths: Vec::new(),
+                    fetched_at: 0,
+                },
+            )
+            .unwrap();
+
+        assert!(cache.is_processed("old-game-id"));
+        assert!(cache.rekey("old-game-id", "new-game-id").unwrap());
+        assert!(!cache.is_processed("old-game-id"));
+        assert!(cache.is_processed("new-game-id"));
+
+        let _ = std::fs::remove_file(path);
     }
 }

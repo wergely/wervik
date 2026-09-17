@@ -320,6 +320,49 @@ impl AppState {
         }
     }
 
+    /// Keeps metadata attached to a ROM when a rescan gives it a new source
+    /// id, which happens for folder-based games after their parent directory
+    /// is moved. Matching the local title and platform avoids another lookup
+    /// while still letting a platform change produce a fresh result.
+    pub(crate) fn preserve_rom_metadata_across_rescan(
+        &mut self,
+        previous: &[RomGame],
+        scanned: &[RomGame],
+    ) {
+        let mut candidates: HashMap<(Platform, String), Vec<String>> = HashMap::new();
+        for game in previous {
+            if self.metadata_cache.is_processed(&game.id) {
+                candidates
+                    .entry((game.platform, game.name.clone()))
+                    .or_default()
+                    .push(game.id.clone());
+            }
+        }
+
+        for game in scanned {
+            if self.metadata_cache.is_processed(&game.id) {
+                if let Some(ids) = candidates.get_mut(&(game.platform, game.name.clone())) {
+                    ids.retain(|id| id != &game.id);
+                }
+                continue;
+            }
+            let key = (game.platform, game.name.clone());
+            let Some(ids) = candidates.get_mut(&key) else {
+                continue;
+            };
+            let Some(index) = ids.iter().position(|id| id != &game.id) else {
+                continue;
+            };
+            let old_id = ids.remove(index);
+            if let Err(error) = self.metadata_cache.rekey(&old_id, &game.id) {
+                eprintln!(
+                    "Could not carry metadata from {old_id} to {}: {error}",
+                    game.id
+                );
+            }
+        }
+    }
+
     /// Reconciles ROMs whose localized filenames resolve to the same IGDB
     /// game. The preferred regional dump remains the visible game while the
     /// other files stay available through the existing variant picker.
@@ -418,6 +461,8 @@ impl AppState {
             }
             if let Some(state_handle) = app_handle.try_state::<AppStateHandle>() {
                 let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                let previous_rom_games = std::mem::replace(&mut state.rom_games, Vec::new());
+                state.preserve_rom_metadata_across_rescan(&previous_rom_games, &scanned);
                 state.rom_games = scanned;
                 // Built as an owned `Vec` first rather than passed inline:
                 // through a `MutexGuard`, `state.store.migrate_legacy_bios_paths(state.rom_games...)`
@@ -546,9 +591,8 @@ pub fn get_metadata_progress(state: State<AppStateHandle>) -> MetadataProgress {
 /// Wipes the IGDB metadata cache (entries, misses, and downloaded artwork)
 /// and re-runs the background fetch for every game, from Settings' "Refresh
 /// metadata" button. Unlike a normal rescan, this is the only way to correct
-/// a game that already has a *wrong* cached match — the cache otherwise
-/// treats it as fresh for up to 30 days regardless of whether the match was
-/// actually right.
+/// a game that already has a *wrong* cached match — normal scans keep the
+/// existing result regardless of its age.
 #[tauri::command(async)]
 pub fn refresh_all_metadata(state: State<AppStateHandle>) -> Result<(), String> {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1285,7 +1329,7 @@ pub fn get_library(state: State<AppStateHandle>) -> LibrarySnapshot {
 /// Shared tail of `get_game_metadata` and `refresh_game_metadata`: runs the
 /// selected metadata lookup and records either the result or a miss in the cache.
 /// Callers are responsible for anything that has to happen *before* the
-/// lookup (checking for an already-fresh cache hit, or clearing a stale one).
+/// lookup (checking for an already-processed cache hit, or clearing it).
 fn fetch_and_store_metadata(
     state: &State<AppStateHandle>,
     app_data_dir: &Path,
@@ -1341,7 +1385,7 @@ pub fn get_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (cached, recent_miss, app_data_dir, settings, wervik_access_token) = {
+    let (cached, processed, app_data_dir, settings, wervik_access_token) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let settings = state.store.settings();
         let wervik_access_token = state
@@ -1351,16 +1395,16 @@ pub fn get_game_metadata(
             .filter(|token| !token.trim().is_empty());
         (
             state.metadata_cache.get(&game_id),
-            state.metadata_cache.recent_miss(&game_id),
+            state.metadata_cache.is_processed(&game_id),
             state.app_data_dir.clone(),
             settings,
             wervik_access_token,
         )
     };
-    if let Some(metadata) = cached.filter(metadata::is_fresh) {
+    if let Some(metadata) = cached {
         return Ok(Some(metadata));
     }
-    if recent_miss {
+    if processed {
         return Ok(None);
     }
 
