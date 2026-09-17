@@ -214,11 +214,20 @@ struct IgdbGame {
     screenshots: Option<Vec<IgdbImage>>,
     genres: Option<Vec<IgdbNamedObject>>,
     platforms: Option<Vec<IgdbNamedObject>>,
+    release_dates: Option<Vec<IgdbReleaseDate>>,
     involved_companies: Option<Vec<IgdbCompany>>,
     rating: Option<f64>,
     rating_count: Option<u64>,
     aggregated_rating: Option<f64>,
     aggregated_rating_count: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IgdbReleaseDate {
+    /// IGDB's legacy release-region enum: North America is 2 and worldwide
+    /// is 8. It remains available on the games response and is enough for
+    /// choosing the preferred regional edition without another API request.
+    region: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,7 +338,7 @@ fn twitch_token(agent: &Agent, client_id: &str, client_secret: &str) -> Result<S
 fn igdb_query(name: &str) -> String {
     let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
-        "search \"{escaped}\"; fields id,name,slug,url,summary,first_release_date,cover.url,screenshots.url,genres.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count,aggregated_rating,aggregated_rating_count; limit 8;"
+        "search \"{escaped}\"; fields id,name,slug,url,summary,first_release_date,cover.url,screenshots.url,genres.name,platforms.name,release_dates.region,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count,aggregated_rating,aggregated_rating_count; limit 20;"
     )
 }
 
@@ -389,6 +398,29 @@ fn platform_rank(result_platforms: &[IgdbNamedObject], expected: Option<Platform
     }
 }
 
+/// IGDB's release-region enum uses 2 for North America and 8 for worldwide.
+/// Wervik prefers the North American release as the default edition; missing
+/// region data remains preferable to a title released only elsewhere because
+/// absence is not evidence that the match is wrong.
+fn region_rank(game: &IgdbGame) -> u8 {
+    let regions: Vec<u8> = game
+        .release_dates
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|release| release.region)
+        .collect();
+    if regions.contains(&2) {
+        0
+    } else if regions.contains(&8) {
+        1
+    } else if regions.is_empty() {
+        2
+    } else {
+        3
+    }
+}
+
 fn choose_result(
     mut results: Vec<IgdbGame>,
     requested_name: &str,
@@ -414,10 +446,12 @@ fn choose_result(
         };
         let left_key = (
             platform_rank(left.platforms.as_deref().unwrap_or(&[]), expected_platform),
+            region_rank(left),
             title_rank(&left_title),
         );
         let right_key = (
             platform_rank(right.platforms.as_deref().unwrap_or(&[]), expected_platform),
+            region_rank(right),
             title_rank(&right_title),
         );
         let key_order = left_key.cmp(&right_key);
@@ -1006,6 +1040,7 @@ mod tests {
             platforms: Some(vec![IgdbNamedObject {
                 name: Some("Nintendo Switch".to_string()),
             }]),
+            release_dates: None,
             involved_companies: None,
             rating: None,
             rating_count: None,
@@ -1027,6 +1062,7 @@ mod tests {
                 screenshots: None,
                 genres: None,
                 platforms: None,
+                release_dates: None,
                 involved_companies: None,
                 rating: None,
                 rating_count: None,
@@ -1044,9 +1080,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn choose_result_prefers_base_title_over_numbered_sequel() {
-        let n64_game = |id, name| IgdbGame {
+    fn n64_game(id: u64, name: &str, region: u8) -> IgdbGame {
+        IgdbGame {
             id,
             name: Some(name.to_string()),
             slug: None,
@@ -1059,17 +1094,38 @@ mod tests {
             platforms: Some(vec![IgdbNamedObject {
                 name: Some("Nintendo 64".to_string()),
             }]),
+            release_dates: Some(vec![IgdbReleaseDate {
+                region: Some(region),
+            }]),
             involved_companies: None,
             rating: None,
             rating_count: None,
             aggregated_rating: None,
             aggregated_rating_count: None,
-        };
-        let sequel = n64_game(2, "Super Mario 64 2");
-        let original = n64_game(1, "Super Mario 64");
+        }
+    }
+
+    #[test]
+    fn choose_result_prefers_base_title_over_numbered_sequel() {
+        let sequel = n64_game(2, "Super Mario 64 2", 5);
+        let original = n64_game(1, "Super Mario 64", 2);
 
         let chosen = choose_result(
             vec![sequel, original],
+            "Mario 64",
+            Some(Platform::Nintendo64),
+        )
+        .unwrap();
+        assert_eq!(chosen.id, 1);
+    }
+
+    #[test]
+    fn choose_result_prefers_the_north_american_base_over_a_japanese_revision() {
+        let chosen = choose_result(
+            vec![
+                n64_game(2, "Super Mario 64: Shindou Pak Taiou Version", 5),
+                n64_game(1, "Super Mario 64", 2),
+            ],
             "Mario 64",
             Some(Platform::Nintendo64),
         )
