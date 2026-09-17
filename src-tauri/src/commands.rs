@@ -1532,7 +1532,7 @@ pub fn get_game_metadata(
     platform_key: Option<String>,
 ) -> Result<Option<GameMetadata>, String> {
     let platform = platform_key.as_deref().and_then(Platform::from_key);
-    let (cached, processed, app_data_dir, settings, wervik_access_token) = {
+    let (cached, processed, app_data_dir, lookup_name, settings, wervik_access_token) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let settings = state.store.settings();
         let wervik_access_token = state
@@ -1540,10 +1540,21 @@ pub fn get_game_metadata(
             .wervik_account()
             .map(|account| account.access_token)
             .filter(|token| !token.trim().is_empty());
+        // The library DTO may expose a cached metadata title instead of the
+        // filename-derived ROM title. A normal lookup must use the original
+        // ROM name too, otherwise an in-flight request started before a
+        // manual refresh can reintroduce the old match when it finishes.
+        let lookup_name = state
+            .rom_games
+            .iter()
+            .find(|rom| rom.id == game_id)
+            .map(|rom| rom.name.clone())
+            .unwrap_or(game_name);
         (
             state.metadata_cache.get(&game_id),
             state.metadata_cache.is_processed(&game_id),
             state.app_data_dir.clone(),
+            lookup_name,
             settings,
             wervik_access_token,
         )
@@ -1559,7 +1570,7 @@ pub fn get_game_metadata(
         &state,
         &app_data_dir,
         game_id,
-        &game_name,
+        &lookup_name,
         platform,
         &settings,
         wervik_access_token.as_deref(),

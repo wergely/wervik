@@ -238,6 +238,7 @@ export function GameDetail({
   const [achievementsExpanded, setAchievementsExpanded] = useState(false);
   const [selectedAchievement, setSelectedAchievement] = useState<DisplayAchievement | null>(null);
   const [achievementsError, setAchievementsError] = useState<string | null>(null);
+  const metadataRequestRef = useRef(0);
   const achievementsRequestRef = useRef(0);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [lightboxGallery, setLightboxGallery] = useState<string[]>([]);
@@ -337,29 +338,31 @@ export function GameDetail({
   }
 
   useEffect(() => {
+    const requestId = ++metadataRequestRef.current;
     let cancelled = false;
     setMetadata(null);
     setMetadataLoading(true);
     getGameMetadata(game.id, game.name, game.platformKey)
       .then((value) => {
-        if (!cancelled) setMetadata(value);
+        if (!cancelled && requestId === metadataRequestRef.current) setMetadata(value);
       })
       .catch(() => {
-        if (!cancelled) setMetadata(null);
+        if (!cancelled && requestId === metadataRequestRef.current) setMetadata(null);
       })
       .finally(() => {
-        if (!cancelled) setMetadataLoading(false);
+        if (!cancelled && requestId === metadataRequestRef.current) setMetadataLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [game.id, game.name]);
+  }, [game.id, game.name, game.platformKey]);
 
   async function handleRefreshMetadata() {
+    const requestId = ++metadataRequestRef.current;
     setMetadataRefreshing(true);
     try {
       const value = await refreshGameMetadata(game.id, game.name, game.platformKey);
-      setMetadata(value);
+      if (requestId === metadataRequestRef.current) setMetadata(value);
     } catch {
       // Keep whatever was already shown — the credit line's button just
       // stops spinning, same as a failed background fetch would.
