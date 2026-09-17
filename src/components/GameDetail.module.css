@@ -322,6 +322,48 @@
   transition: transform 120ms var(--ease);
 }
 
+.lightboxNavButton {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0 4px;
+  color: var(--text);
+  background: rgba(17, 20, 28, 0.9);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 2rem;
+  line-height: 1;
+  transform: translateY(-50%);
+  transition:
+    color 140ms var(--ease),
+    border-color 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+
+.lightboxNavPrevious {
+  left: 22px;
+}
+
+.lightboxNavNext {
+  right: 22px;
+}
+
+.lightboxNavButton:hover,
+.lightboxNavButton:focus-visible {
+  color: var(--cyan);
+  border-color: var(--cyan);
+  transform: translateY(-50%) scale(1.05);
+}
+
+.lightboxNavButton:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
 .lightboxControls {
   position: absolute;
   left: 50%;
@@ -335,6 +377,14 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: var(--shadow-card);
+}
+
+.lightboxCounter {
+  min-width: 42px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
 }
 
 .zoomButton {
@@ -418,6 +468,8 @@
   }
   .lightboxImage { max-height: calc(100vh - 48px); }
   .lightboxControls { bottom: 12px; }
+  .lightboxNavPrevious { left: 10px; }
+  .lightboxNavNext { right: 10px; }
   .lightboxClose {
     top: 12px;
     right: 14px;
@@ -915,6 +967,20 @@
 
 .reactionButton:focus-visible {
   box-shadow: var(--shadow-focus);
+}
+
+.reactionButton.favoriteAction {
+  color: var(--text);
+}
+
+.reactionButton.dislikeAction {
+  color: var(--text-secondary);
+}
+
+.actionIcon {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .reactionButton.favoriteActive {

@@ -154,11 +154,13 @@ function releaseYear(metadata: GameMetadata): string | null {
 function MetadataScreenshot({
   path,
   index,
+  gallery,
   onOpen,
 }: {
   path: string;
   index: number;
-  onOpen: (path: string, trigger: HTMLButtonElement) => void;
+  gallery: string[];
+  onOpen: (path: string, index: number, gallery: string[], trigger: HTMLButtonElement) => void;
 }) {
   const image = useArtwork(path);
   if (!image.url || image.failed) return null;
@@ -167,7 +169,7 @@ function MetadataScreenshot({
       type="button"
       className={styles.screenshotButton}
       data-nav-item
-      onClick={(event) => onOpen(path, event.currentTarget)}
+      onClick={(event) => onOpen(path, index, gallery, event.currentTarget)}
       aria-label={`Open screenshot ${index + 1} full screen`}
     >
       <img src={image.url} alt={`Screenshot ${index + 1}`} draggable={false} />
@@ -230,7 +232,8 @@ export function GameDetail({
   const [achievementsError, setAchievementsError] = useState<string | null>(null);
   const achievementsRequestRef = useRef(0);
   const [overflowOpen, setOverflowOpen] = useState(false);
-  const [lightboxPath, setLightboxPath] = useState<string | null>(null);
+  const [lightboxGallery, setLightboxGallery] = useState<string[]>([]);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxZoom, setLightboxZoom] = useState(1);
   // `null` means "play the default version" — see `Game.variants`.
   const [selectedVariantId, setSelectedVariantId] = useState<string | null>(null);
@@ -241,6 +244,7 @@ export function GameDetail({
   const gameCover = useArtwork(game.coverPath);
   const metadataHero = useArtwork(metadata?.heroPath ?? metadata?.coverPath);
   const metadataCover = useArtwork(metadata?.coverPath);
+  const lightboxPath = lightboxGallery[lightboxIndex] ?? null;
   const lightboxImage = useArtwork(lightboxPath);
   const hero = gameHero.url && !gameHero.failed ? gameHero : metadataHero;
   const cover = gameCover.url && !gameCover.failed ? gameCover : metadataCover;
@@ -248,19 +252,29 @@ export function GameDetail({
   useEffect(() => {
     playButtonRef.current?.focus();
     setOverflowOpen(false);
-    setLightboxPath(null);
+    setLightboxGallery([]);
+    setLightboxIndex(0);
     setSelectedVariantId(null);
     setLaunching(false);
   }, [game.id, game.source, game.appId]);
 
   const closeLightbox = useCallback(() => {
-    setLightboxPath(null);
+    setLightboxGallery([]);
+    setLightboxIndex(0);
     setLightboxZoom(1);
     requestAnimationFrame(() => lightboxTriggerRef.current?.focus());
   }, []);
 
+  const moveLightbox = useCallback((direction: -1 | 1) => {
+    setLightboxIndex((index) => {
+      if (lightboxGallery.length < 2) return index;
+      return (index + direction + lightboxGallery.length) % lightboxGallery.length;
+    });
+    setLightboxZoom(1);
+  }, [lightboxGallery.length]);
+
   useEffect(() => {
-    if (!lightboxPath) return;
+    if (lightboxGallery.length === 0) return;
 
     // App passes a React state setter: wrap the callback so React stores
     // it instead of invoking it as a state updater and closing the preview.
@@ -281,15 +295,21 @@ export function GameDetail({
       registerBackHandler(null);
       registerNavScope(null);
     };
-  }, [closeLightbox, lightboxPath, registerBackHandler, registerNavScope]);
+  }, [closeLightbox, lightboxGallery.length, registerBackHandler, registerNavScope]);
 
   useEffect(() => {
     setLightboxZoom(1);
   }, [lightboxPath]);
 
-  function openLightbox(path: string, trigger: HTMLButtonElement) {
+  function openLightbox(
+    _path: string,
+    index: number,
+    gallery: string[],
+    trigger: HTMLButtonElement,
+  ) {
     lightboxTriggerRef.current = trigger;
-    setLightboxPath(path);
+    setLightboxGallery(gallery);
+    setLightboxIndex(index);
   }
 
   useEffect(() => {
@@ -526,25 +546,42 @@ export function GameDetail({
             <div className={styles.miniActionsRow}>
               <button
                 type="button"
-                className={`${styles.reactionButton} ${game.isFavorite ? styles.favoriteActive : ""}`}
+                className={`${styles.reactionButton} ${styles.favoriteAction} ${game.isFavorite ? styles.favoriteActive : ""}`}
                 data-nav-item
                 onClick={() => onToggleFavorite(game.id)}
                 aria-pressed={game.isFavorite}
                 aria-label={game.isFavorite ? "Remove favorite" : "Add favorite"}
                 title={game.isFavorite ? "Remove favorite" : "Add favorite"}
               >
-                <span aria-hidden="true">{game.isFavorite ? "♥" : "♡"}</span>
+                <svg className={styles.actionIcon} viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                  />
+                </svg>
               </button>
               <button
                 type="button"
-                className={`${styles.reactionButton} ${game.reaction === "dislike" ? styles.dislikeActive : ""}`}
+                className={`${styles.reactionButton} ${styles.dislikeAction} ${game.reaction === "dislike" ? styles.dislikeActive : ""}`}
                 data-nav-item
                 onClick={() => onSetReaction(game.id, game.reaction === "dislike" ? null : "dislike")}
                 aria-pressed={game.reaction === "dislike"}
                 aria-label={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
                 title={game.reaction === "dislike" ? "Remove dislike" : "Dislike this game"}
               >
-                <span aria-hidden="true">👎</span>
+                <svg
+                  className={styles.actionIcon}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M10 15v4a3 3 0 0 0 3 3l4-8V2H5.72a2 2 0 0 0-2 1.7l-1.38 9A2 2 0 0 0 4.32 15H10Z" />
+                  <path d="M18 2h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2" />
+                </svg>
               </button>
               <OverflowMenu
                 open={overflowOpen}
@@ -674,6 +711,7 @@ export function GameDetail({
                       key={path}
                       path={path}
                       index={index}
+                      gallery={metadata.screenshotPaths}
                       onOpen={openLightbox}
                     />
                   ))}
@@ -710,6 +748,7 @@ export function GameDetail({
                     key={path}
                     path={path}
                     index={index}
+                    gallery={game.localScreenshotPaths}
                     onOpen={openLightbox}
                   />
                 ))}
@@ -843,10 +882,19 @@ export function GameDetail({
           aria-modal="true"
           aria-label="Screenshot preview"
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            event.preventDefault();
-            event.stopPropagation();
-            closeLightbox();
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              closeLightbox();
+            } else if (event.key === "ArrowLeft" && lightboxGallery.length > 1) {
+              event.preventDefault();
+              event.stopPropagation();
+              moveLightbox(-1);
+            } else if (event.key === "ArrowRight" && lightboxGallery.length > 1) {
+              event.preventDefault();
+              event.stopPropagation();
+              moveLightbox(1);
+            }
           }}
           onClick={(event) => {
             if (event.target === event.currentTarget) closeLightbox();
@@ -861,12 +909,34 @@ export function GameDetail({
           >
             ×
           </button>
+          {lightboxGallery.length > 1 && (
+            <>
+              <button
+                type="button"
+                className={`${styles.lightboxNavButton} ${styles.lightboxNavPrevious}`}
+                data-nav-item
+                onClick={() => moveLightbox(-1)}
+                aria-label="Previous screenshot"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className={`${styles.lightboxNavButton} ${styles.lightboxNavNext}`}
+                data-nav-item
+                onClick={() => moveLightbox(1)}
+                aria-label="Next screenshot"
+              >
+                ›
+              </button>
+            </>
+          )}
           <div className={styles.lightboxContent}>
             {lightboxImage.url && !lightboxImage.failed ? (
               <img
                 className={styles.lightboxImage}
                 src={lightboxImage.url}
-                alt="Expanded game screenshot"
+                alt={`Expanded game screenshot ${lightboxIndex + 1}`}
                 draggable={false}
                 style={{ transform: `scale(${lightboxZoom})` }}
               />
@@ -875,6 +945,9 @@ export function GameDetail({
             )}
           </div>
           <div className={styles.lightboxControls} aria-label="Screenshot zoom controls">
+            <span className={styles.lightboxCounter} aria-live="polite">
+              {lightboxIndex + 1} / {lightboxGallery.length}
+            </span>
             <button
               type="button"
               className={styles.zoomButton}
