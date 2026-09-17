@@ -55,7 +55,7 @@ function sortGames(games: Game[], mode: SortMode): Game[] {
 }
 
 export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: LibrarySectionProps) {
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(settings?.librarySearch ?? "");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const advancedRef = useRef<HTMLDivElement>(null);
   const sortMode: SortMode = settings?.librarySortMode ?? "playtime";
@@ -74,6 +74,10 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
   const igdbMetadataOnly = settings?.libraryIgdbMetadataOnly ?? false;
 
   const setSortMode = (mode: SortMode) => onUpdateSettings({ librarySortMode: mode });
+  const setSearchValue = (value: string) => {
+    setSearch(value);
+    onUpdateSettings({ librarySearch: value });
+  };
   const setFavoritesOnly = (value: boolean) => onUpdateSettings({ libraryFavoritesOnly: value });
   const setSourceFilter = (value: GameSource[]) => onUpdateSettings({ librarySourceFilter: value });
   const setPlatformFilter = (value: string[]) => onUpdateSettings({ libraryPlatformFilter: value });
@@ -108,6 +112,10 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
       publishers: Array.from(publishers).sort((a, b) => a.localeCompare(b)),
     };
   }, [games]);
+
+  useEffect(() => {
+    if (settings) setSearch(settings.librarySearch);
+  }, [settings?.librarySearch]);
 
   useEffect(() => {
     if (!advancedOpen) return;
@@ -253,7 +261,7 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
             className={styles.searchInput}
             placeholder="Search games…"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => setSearchValue(e.target.value)}
             data-nav-item
           />
           <MultiSelect

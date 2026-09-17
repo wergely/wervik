@@ -75,6 +75,10 @@ pub struct Settings {
     /// just navigating away and back to Home) doesn't reset them.
     #[serde(default = "default_library_sort_mode")]
     pub library_sort_mode: String,
+    /// The Library grid's current search text, persisted alongside its
+    /// sort/filter selections.
+    #[serde(default)]
+    pub library_search: String,
     #[serde(
         default = "default_all_filters",
         deserialize_with = "deserialize_filter_list"
@@ -211,6 +215,7 @@ impl Default for Settings {
             ui_scale: default_ui_scale(),
             metadata_provider: MetadataProvider::default(),
             library_sort_mode: default_library_sort_mode(),
+            library_search: String::new(),
             library_source_filter: default_all_filters(),
             library_platform_filter: default_all_filters(),
             library_favorites_only: false,

@@ -192,6 +192,8 @@ export interface Settings {
   metadataProvider: MetadataProvider;
   /** The Library grid's own sort/filter selections — see `LibrarySection`. */
   librarySortMode: SortMode;
+  /** The Library grid's current search text. */
+  librarySearch: string;
   /** Empty means all sources; otherwise the selected source badges. */
   librarySourceFilter: GameSource[];
   /** Empty means all retro platforms; otherwise the selected platforms. */
