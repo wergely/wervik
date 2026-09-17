@@ -400,6 +400,9 @@ export function GameDetail({
 
   const playtime = formatPlaytime(game.playtimeMinutes);
   const lastPlayed = formatLastPlayed(game.lastPlayed);
+  const orderedAchievements = achievements
+    ? [...achievements.achievements].sort((a, b) => Number(b.unlocked) - Number(a.unlocked))
+    : [];
 
   async function handlePlay() {
     if (launching) return;
@@ -745,8 +748,8 @@ export function GameDetail({
               </div>
               <div className={styles.achievementsGrid}>
                 {(achievementsExpanded
-                  ? achievements.achievements
-                  : achievements.achievements.slice(0, ACHIEVEMENTS_PREVIEW_COUNT)
+                  ? orderedAchievements
+                  : orderedAchievements.slice(0, ACHIEVEMENTS_PREVIEW_COUNT)
                 ).map((achievement) => (
                   <button
                     key={achievement.id}
@@ -776,14 +779,14 @@ export function GameDetail({
                   </button>
                 ))}
               </div>
-              {achievements.achievements.length > ACHIEVEMENTS_PREVIEW_COUNT && (
+              {orderedAchievements.length > ACHIEVEMENTS_PREVIEW_COUNT && (
                 <button
                   type="button"
                   className={styles.achievementsToggle}
                   data-nav-item
                   onClick={() => setAchievementsExpanded((expanded) => !expanded)}
                 >
-                  {achievementsExpanded ? "Show fewer" : `Show all ${achievements.achievements.length}`}
+                  {achievementsExpanded ? "Show fewer" : `Show all ${orderedAchievements.length}`}
                 </button>
               )}
               <div className={styles.achievementsCredit}>
