@@ -648,6 +648,28 @@ pub fn get_metadata_progress(state: State<AppStateHandle>) -> MetadataProgress {
     }
 }
 
+/// Invalidates the current metadata pass. An in-flight HTTP request cannot be
+/// interrupted by ureq, but the worker checks this generation immediately
+/// after it returns and will discard the result instead of continuing.
+#[tauri::command(async)]
+pub fn cancel_metadata_fetch(state: State<AppStateHandle>) -> Result<(), String> {
+    let (progress, app_handle) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .metadata_fetch_generation
+            .fetch_add(1, Ordering::SeqCst);
+        state.metadata_fetch_running.store(false, Ordering::SeqCst);
+        let total = state.metadata_progress.total.load(Ordering::SeqCst);
+        state.metadata_progress.done.store(total, Ordering::SeqCst);
+        (
+            MetadataProgress { done: total, total },
+            state.app_handle.clone(),
+        )
+    };
+    let _ = app_handle.emit("metadata-progress", progress);
+    Ok(())
+}
+
 /// Wipes the IGDB metadata cache (entries, misses, and downloaded artwork)
 /// and re-runs the background fetch for every game, from Settings' "Refresh
 /// metadata" button. Unlike a normal rescan, this is the only way to correct

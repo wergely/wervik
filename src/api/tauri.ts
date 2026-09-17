@@ -94,6 +94,10 @@ export function getMetadataProgress(): Promise<MetadataProgress> {
   return invoke("get_metadata_progress");
 }
 
+export function cancelMetadataFetch(): Promise<void> {
+  return invoke("cancel_metadata_fetch");
+}
+
 export function refreshAllMetadata(): Promise<void> {
   return invoke("refresh_all_metadata");
 }

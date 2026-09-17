@@ -263,6 +263,7 @@ pub fn run() {
             commands::rescan_library,
             commands::get_artwork_progress,
             commands::get_metadata_progress,
+            commands::cancel_metadata_fetch,
             commands::refresh_all_metadata,
             commands::fetch_cover_now,
             commands::launch_game,

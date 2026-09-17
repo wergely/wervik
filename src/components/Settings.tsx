@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   addRomDirectory,
+  cancelMetadataFetch,
   getPlatformStatus,
   getRomDirectories,
   refreshAllMetadata,
@@ -90,6 +91,7 @@ function MetadataFields({
   const fetchingMetadata =
     !!metadataProgress && metadataProgress.total > 0 && metadataProgress.done < metadataProgress.total;
   const [refreshRequested, setRefreshRequested] = useState(false);
+  const [metadataCancelling, setMetadataCancelling] = useState(false);
 
   function save() {
     onUpdateSettings({ igdbClientId: clientId.trim(), igdbClientSecret: clientSecret.trim() });
@@ -101,6 +103,15 @@ function MetadataFields({
       await refreshAllMetadata();
     } finally {
       setRefreshRequested(false);
+    }
+  }
+
+  async function cancelMetadata() {
+    setMetadataCancelling(true);
+    try {
+      await cancelMetadataFetch();
+    } finally {
+      setMetadataCancelling(false);
     }
   }
 
@@ -215,20 +226,30 @@ function MetadataFields({
               wrong details or artwork.
             </div>
           </div>
-          <button
-            type="button"
-            className={styles.rescanButton}
-            data-nav-item
-            onClick={refreshMetadata}
-            disabled={refreshRequested || fetchingMetadata}
-          >
-            {(refreshRequested || fetchingMetadata) && <Spinner />}
-            {fetchingMetadata
-              ? `Updating ${metadataProgress!.done}/${metadataProgress!.total}…`
-              : refreshRequested
-                ? "Starting…"
-                : "Refresh now"}
-          </button>
+          {fetchingMetadata ? (
+            <button
+              type="button"
+              className={styles.rescanButton}
+              data-nav-item
+              onClick={cancelMetadata}
+              disabled={metadataCancelling}
+              aria-label="Cancel metadata refresh"
+            >
+              {metadataCancelling && <Spinner />}
+              {metadataCancelling ? "Cancelling…" : "Cancel"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={styles.rescanButton}
+              data-nav-item
+              onClick={refreshMetadata}
+              disabled={refreshRequested}
+            >
+              {refreshRequested && <Spinner />}
+              {refreshRequested ? "Starting…" : "Refresh now"}
+            </button>
+          )}
         </div>
       )}
     </>
