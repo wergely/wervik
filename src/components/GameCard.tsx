@@ -16,7 +16,7 @@ function releaseYear(game: Game): string | null {
 }
 
 export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
-  const { url, failed } = useArtwork(game.coverPath);
+  const { url, failed, ref: artworkRef } = useArtwork(game.coverPath, { lazy: true });
 
   return (
     <button
@@ -26,9 +26,9 @@ export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
       onClick={() => onSelect(game)}
       aria-label={`${game.name}${game.isInstalled ? "" : " — Not installed"}`}
     >
-      <div className={styles.art}>
+      <div className={styles.art} ref={artworkRef}>
         {url && !failed ? (
-          <img src={url} alt="" draggable={false} />
+          <img src={url} alt="" draggable={false} loading="lazy" decoding="async" />
         ) : (
           <div className={styles.placeholder}>
             <span>{game.name}</span>

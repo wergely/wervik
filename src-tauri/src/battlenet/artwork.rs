@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use ureq::Agent;
 
 use super::discovery::BattleNetGame;
@@ -169,6 +169,19 @@ pub fn spawn_fetch(
             };
             match fetch_missing(&agent, &app_data_dir, &game, &urls) {
                 Ok(true) => {
+                    if let Some(state) = app_handle.try_state::<crate::commands::AppStateHandle>() {
+                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(path) = cached_cover(&app_data_dir, &game) {
+                            state
+                                .known_image_paths
+                                .insert(path.to_string_lossy().into_owned());
+                        }
+                        if let Some(path) = cached_hero(&app_data_dir, &game) {
+                            state
+                                .known_image_paths
+                                .insert(path.to_string_lossy().into_owned());
+                        }
+                    }
                     let _ = app_handle.emit("battlenet-artwork-updated", &game.id);
                 }
                 Ok(false) => {}

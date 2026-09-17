@@ -22,7 +22,7 @@ export function PlatformCard({ platform, onSelect }: PlatformCardProps) {
           player's own games, which would make the same platform look
           different every rescan. */}
       <div className={styles.art}>
-        <PlatformIcon source="retro" platformKey={platform.key} size={56} art />
+        <PlatformIcon source="retro" platformKey={platform.key} size={56} art artVariant="thumb" />
       </div>
       <div className={styles.info}>
         <span className={styles.name}>{platform.displayName}</span>

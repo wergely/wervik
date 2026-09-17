@@ -20,18 +20,31 @@ for (const path in iconModules) {
 // Platform-page artwork can be supplied independently from the compact icon
 // used in badges and achievement rows. This keeps a cinematic card image from
 // being squeezed into a tiny source badge.
-const artModules = import.meta.glob("../assets/platform-art/*.png", { eager: true, import: "default" }) as Record<
+const artModules = import.meta.glob("../assets/platform-art/*.webp", { eager: true, import: "default" }) as Record<
   string,
   string
 >;
+const artThumbModules = import.meta.glob("../assets/platform-art/thumbs/*.webp", {
+  eager: true,
+  import: "default",
+}) as Record<string, string>;
 const retroArt: Record<string, string> = {};
 for (const path in artModules) {
-  const key = path.split("/").pop()?.replace(/\.png$/, "");
+  const key = path.split("/").pop()?.replace(/\.webp$/, "");
   if (key) retroArt[key] = artModules[path];
 }
+const retroArtThumb: Record<string, string> = {};
+for (const path in artThumbModules) {
+  const key = path.split("/").pop()?.replace(/\.webp$/, "");
+  if (key) retroArtThumb[key] = artThumbModules[path];
+}
 
-export function platformArtworkUrl(platformKey?: string | null): string | undefined {
-  return platformKey ? retroArt[platformKey] : undefined;
+export function platformArtworkUrl(
+  platformKey?: string | null,
+  variant: "full" | "thumb" = "full",
+): string | undefined {
+  if (!platformKey) return undefined;
+  return variant === "thumb" ? retroArtThumb[platformKey] ?? retroArt[platformKey] : retroArt[platformKey];
 }
 
 // Simple Icons has no Xbox entry (removed at the trademark holder's
@@ -51,6 +64,8 @@ interface PlatformIconProps {
   platformKey?: string | null;
   /** Use platform-page artwork instead of the compact console icon when available. */
   art?: boolean;
+  /** Selects the lighter card thumbnail or the larger detail-view artwork. */
+  artVariant?: "full" | "thumb";
   size?: number;
   className?: string;
 }
@@ -59,9 +74,16 @@ interface PlatformIconProps {
  * game come from": a real brand mark for Steam/Battle.net/EA, a real
  * console logo for a recognized retro platform, or a plain generic
  * controller glyph when neither is available. */
-export function PlatformIcon({ source, platformKey, art = false, size = 20, className }: PlatformIconProps) {
+export function PlatformIcon({
+  source,
+  platformKey,
+  art = false,
+  artVariant = "full",
+  size = 20,
+  className,
+}: PlatformIconProps) {
   if (source === "retro") {
-    const imageUrl = art ? platformArtworkUrl(platformKey) : undefined;
+    const imageUrl = art ? platformArtworkUrl(platformKey, artVariant) : undefined;
     const iconUrl = platformKey ? retroIcons[platformKey] : undefined;
     if (imageUrl || iconUrl) {
       return (
@@ -70,6 +92,8 @@ export function PlatformIcon({ source, platformKey, art = false, size = 20, clas
           alt=""
           draggable={false}
           className={className}
+          loading={imageUrl ? "lazy" : undefined}
+          decoding="async"
           style={{
             width: imageUrl ? "100%" : size,
             height: imageUrl ? "100%" : size,

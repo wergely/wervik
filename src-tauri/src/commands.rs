@@ -84,6 +84,10 @@ pub struct AppState {
     /// working through the backlog would spawn a second thread hammering
     /// the same host and doubling CPU/network load for no benefit.
     pub artwork_fetch_running: Arc<AtomicBool>,
+    /// Local artwork paths already exposed to the frontend. Keeping this
+    /// allowlist separate from the library DTO avoids rebuilding the entire
+    /// library for every image request.
+    pub known_image_paths: HashSet<String>,
     /// How far the current (or most recent) background artwork fetch has
     /// gotten — read by `get_artwork_progress` so the frontend can show a
     /// progress indicator even if it missed the `retro-artwork-progress`
@@ -128,11 +132,60 @@ impl AppState {
             self.library_folders = result.library_folders;
             self.games = result.games;
         }
+        self.rebuild_known_image_paths();
         self.seed_provider_playtime();
         self.start_metadata_fetch();
         self.start_achievements_fetch();
         self.start_steam_owned_fetch();
         self.start_steam_achievements_fetch();
+    }
+
+    pub(crate) fn rebuild_known_image_paths(&mut self) {
+        let mut paths = HashSet::new();
+        let add_path = |paths: &mut HashSet<String>, path: &Path| {
+            paths.insert(path.to_string_lossy().into_owned());
+        };
+
+        for game in &self.games {
+            for path in [&game.cover_path, &game.hero_path, &game.logo_path]
+                .into_iter()
+                .flatten()
+            {
+                add_path(&mut paths, path);
+            }
+        }
+        for game in &self.xbox_games {
+            if let Some(path) = &game.logo_path {
+                add_path(&mut paths, path);
+            }
+        }
+        for game in &self.battlenet_games {
+            if let Some(path) = crate::battlenet::artwork::cached_cover(&self.app_data_dir, game) {
+                add_path(&mut paths, &path);
+            }
+            if let Some(path) = crate::battlenet::artwork::cached_hero(&self.app_data_dir, game) {
+                add_path(&mut paths, &path);
+            }
+        }
+        for game in &self.rom_games {
+            if let Some(path) = artwork::cached_cover(&self.app_data_dir, &game.id) {
+                add_path(&mut paths, &path);
+            }
+        }
+        for metadata in self.metadata_cache.values() {
+            for path in [
+                metadata.cover_path.as_deref(),
+                metadata.hero_path.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                paths.insert(path.to_owned());
+            }
+            paths.extend(metadata.screenshot_paths.iter().cloned());
+        }
+
+        self.known_image_paths = paths;
     }
 
     pub(crate) fn metadata_queries(&self) -> Vec<metadata::MetadataQuery> {
@@ -478,6 +531,7 @@ impl AppState {
                     .collect();
                 state.store.migrate_legacy_bios_paths(bios_migration_keys);
                 state.dedupe_rom_games_by_metadata();
+                state.rebuild_known_image_paths();
                 let _ = crate::retro::cache::save(&state.app_data_dir, &state.rom_games);
                 // The configured metadata provider is the primary cover
                 // source for retro games. Keep the old libretro-thumbnails
@@ -553,7 +607,13 @@ pub(crate) fn spawn_artwork_fetch(
                 continue;
             }
             match artwork::fetch_cover(&agent, &app_data_dir, &rom) {
-                Ok(Some(_)) => {
+                Ok(Some(path)) => {
+                    if let Some(state_handle) = app_handle.try_state::<AppStateHandle>() {
+                        let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                        state
+                            .known_image_paths
+                            .insert(path.to_string_lossy().into_owned());
+                    }
                     let _ = app_handle.emit("retro-artwork-updated", &rom.id);
                 }
                 Ok(None) => {}
@@ -598,6 +658,7 @@ pub fn refresh_all_metadata(state: State<AppStateHandle>) -> Result<(), String> 
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.metadata_cache.clear()?;
     metadata::clear_artwork(&state.app_data_dir)?;
+    state.rebuild_known_image_paths();
     state.start_metadata_fetch_with_force(true);
     Ok(())
 }
@@ -631,11 +692,23 @@ pub fn fetch_cover_now(state: State<AppStateHandle>, id: String) -> Option<Strin
         (state.app_handle.clone(), state.app_data_dir.clone(), rom)
     };
     if let Some(path) = artwork::cached_cover(&app_data_dir, &id) {
+        if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .known_image_paths
+                .insert(path.to_string_lossy().into_owned());
+        }
         return Some(path.to_string_lossy().to_string());
     }
     std::thread::spawn(move || {
         let agent = artwork::new_agent();
-        if let Ok(Some(_)) = artwork::fetch_cover(&agent, &app_data_dir, &rom) {
+        if let Ok(Some(path)) = artwork::fetch_cover(&agent, &app_data_dir, &rom) {
+            if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state
+                    .known_image_paths
+                    .insert(path.to_string_lossy().into_owned());
+            }
             let _ = app_handle.emit("retro-artwork-updated", &rom.id);
         }
     });
@@ -1048,13 +1121,11 @@ fn retro_to_dto(
             .map(|p| p.to_string_lossy().to_string()),
         hero_path: None,
         logo_path: None,
-        local_screenshot_paths: retro_native::achievement_screenshot_paths(
-            app_data_dir,
-            std::iter::once(rom.rom_path.as_str()).chain(
-                rom.variants.iter().map(|variant| variant.rom_path.as_str()),
-            ),
-            &rom.name,
-        ),
+        // Achievement screenshots are resolved only when the detail view is
+        // opened. Scanning RetroArch's screenshot directory for every ROM
+        // on every library refresh made ordinary snapshots unnecessarily
+        // expensive on larger libraries.
+        local_screenshot_paths: Vec::new(),
         is_favorite: store.is_favorite(&rom.id),
         app_id: None,
         xbox_app_id: None,
@@ -1341,6 +1412,33 @@ pub fn get_library(state: State<AppStateHandle>) -> LibrarySnapshot {
     library_snapshot(&state.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+#[tauri::command(async)]
+pub fn get_game_screenshot_paths(
+    state: State<AppStateHandle>,
+    id: String,
+) -> Result<Vec<String>, String> {
+    let (app_data_dir, rom_paths, game_name) = {
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        let rom = state
+            .rom_games
+            .iter()
+            .find(|rom| rom.id == id)
+            .ok_or_else(|| "Retro game not found".to_string())?;
+        let rom_paths = std::iter::once(rom.rom_path.clone())
+            .chain(rom.variants.iter().map(|variant| variant.rom_path.clone()))
+            .collect::<Vec<_>>();
+        (state.app_data_dir.clone(), rom_paths, rom.name.clone())
+    };
+    let paths = retro_native::achievement_screenshot_paths(
+        &app_data_dir,
+        rom_paths.iter().map(String::as_str),
+        &game_name,
+    );
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.known_image_paths.extend(paths.iter().cloned());
+    Ok(paths)
+}
+
 /// Shared tail of `get_game_metadata` and `refresh_game_metadata`: runs the
 /// selected metadata lookup and records either the result or a miss in the cache.
 /// Callers are responsible for anything that has to happen *before* the
@@ -1375,6 +1473,18 @@ fn fetch_and_store_metadata(
     state
         .metadata_cache
         .put(game_id.clone(), metadata.clone())?;
+    for path in [
+        metadata.cover_path.as_deref(),
+        metadata.hero_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        state.known_image_paths.insert(path.to_owned());
+    }
+    state
+        .known_image_paths
+        .extend(metadata.screenshot_paths.iter().cloned());
     // Same event the background sweep emits on a hit (`metadata::spawn_fetch`)
     // — without it, nothing tells the frontend this game's cached metadata
     // just changed, and `useLibrary`'s snapshot (in particular, whatever
@@ -1453,6 +1563,7 @@ pub fn refresh_game_metadata(
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         state.metadata_cache.remove(&game_id)?;
         metadata::clear_artwork_for(&state.app_data_dir, &game_id)?;
+        state.rebuild_known_image_paths();
         let settings = state.store.settings();
         let wervik_access_token = state
             .store
@@ -3442,6 +3553,7 @@ pub fn set_settings(
     if metadata_provider_changed {
         state.metadata_cache.clear()?;
         metadata::clear_artwork(&state.app_data_dir)?;
+        state.rebuild_known_image_paths();
     }
     state.store.set_settings(settings.clone());
     // Let metadata enrichment start immediately after credentials or provider
@@ -3474,48 +3586,34 @@ pub fn set_settings(
     Ok(())
 }
 
-/// Every cover/hero/logo/screenshot path Wervik currently knows about for
-/// the discovered library, across every source — the allowlist
-/// `read_image` checks against.
-fn known_image_paths(state: &AppState) -> std::collections::HashSet<String> {
-    let mut paths = std::collections::HashSet::new();
-    for game in library_snapshot(state).games {
-        paths.extend(
-            [game.cover_path, game.hero_path, game.logo_path]
-                .into_iter()
-                .flatten(),
-        );
-        paths.extend(game.local_screenshot_paths);
-    }
-    for metadata in state.metadata_cache.values() {
-        paths.extend(
-            [metadata.cover_path.clone(), metadata.hero_path.clone()]
-                .into_iter()
-                .flatten(),
-        );
-        paths.extend(metadata.screenshot_paths.iter().cloned());
-    }
-    paths
-}
-
 /// Reads an image file from disk and returns it as a data: URL, so the
 /// frontend can display Steam artwork without needing filesystem-scope
 /// asset-protocol configuration for arbitrary, runtime-discovered paths.
 ///
 /// `path` must be exactly one of the cover/hero/logo/screenshot paths
 /// Wervik itself already surfaced for a known game (see
-/// `known_image_paths`) — this command is a display helper, not a general
+/// `AppState::known_image_paths`) — this command is a display helper, not a general
 /// file-read primitive callable from the webview with an arbitrary path.
 #[tauri::command(async)]
 pub fn read_image(state: State<AppStateHandle>, path: String) -> Result<String, String> {
-    if !known_image_paths(&state.lock().unwrap_or_else(|e| e.into_inner())).contains(&path) {
+    let is_known = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .known_image_paths
+        .contains(&path);
+    if !is_known {
         return Err("Not a known game image path".into());
     }
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let mime = if path.to_lowercase().ends_with(".png") {
-        "image/png"
-    } else {
-        "image/jpeg"
+    let mime = match Path::new(&path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{encoded}"))

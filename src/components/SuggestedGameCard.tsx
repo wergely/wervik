@@ -19,7 +19,7 @@ function releaseYear(game: Game): string | null {
 
 export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect, onSetReaction }: SuggestedGameCardProps) {
   const reasonId = useId();
-  const { url, failed } = useArtwork(displayedSuggestion.coverPath);
+  const { url, failed, ref: artworkRef } = useArtwork(displayedSuggestion.coverPath, { lazy: true });
   return (
       <div className={styles.cardWrap}>
         <button
@@ -29,9 +29,9 @@ export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect,
           onClick={() => onSelect(displayedSuggestion)}
           aria-label={`${displayedSuggestion.name}${displayedSuggestion.isInstalled ? "" : " — Not installed"}`}
         >
-          <div className={styles.art}>
+          <div className={styles.art} ref={artworkRef}>
             {url && !failed ? (
-              <img src={url} alt="" draggable={false} />
+              <img src={url} alt="" draggable={false} loading="lazy" decoding="async" />
             ) : (
               <div className={styles.placeholder}>
                 <span>{displayedSuggestion.name}</span>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getLibrary,
@@ -16,6 +16,9 @@ export function useLibrary() {
   const [status, setStatus] = useState<LibraryStatus>("loading");
   const [snapshot, setSnapshot] = useState<LibrarySnapshot | null>(null);
   const [rescanning, setRescanning] = useState(false);
+  const refreshTimerRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const refreshPendingRef = useRef(false);
 
   useEffect(() => {
     getLibrary()
@@ -30,25 +33,55 @@ export function useLibrary() {
   // `battlenet::artwork` on the Rust side); each successful fetch emits an
   // event so the library picks it up without the user having to rescan.
   useEffect(() => {
-    const refresh = () => {
-      getLibrary()
-        .then(setSnapshot)
-        .catch(() => {});
+    let disposed = false;
+
+    const scheduleRefresh = () => {
+      if (disposed) return;
+      if (refreshInFlightRef.current) {
+        refreshPendingRef.current = true;
+        return;
+      }
+      if (refreshTimerRef.current !== null) return;
+      refreshTimerRef.current = window.setTimeout(async () => {
+        refreshTimerRef.current = null;
+        if (disposed) return;
+        refreshInFlightRef.current = true;
+        try {
+          const next = await getLibrary();
+          if (!disposed) setSnapshot(next);
+        } catch {
+          // A background refresh is best effort; the current snapshot remains usable.
+        } finally {
+          refreshInFlightRef.current = false;
+          if (refreshPendingRef.current) {
+            refreshPendingRef.current = false;
+            scheduleRefresh();
+          }
+        }
+      }, 150);
     };
-    const unlistenRetro = listen("retro-artwork-updated", refresh);
-    const unlistenBattleNet = listen("battlenet-artwork-updated", refresh);
-    const unlistenPlaytime = listen("playtime-updated", refresh);
-    const unlistenMetadata = listen("metadata-updated", refresh);
-    const unlistenAchievements = listen("retro-achievements-updated", refresh);
-    const unlistenSteamAchievements = listen("steam-achievements-updated", refresh);
-    const unlistenSteamAchievementSettings = listen("steam-achievements-settings-updated", refresh);
-    const unlistenSteamOwnedGames = listen("steam-owned-games-updated", refresh);
+
+    const unlistenRetro = listen("retro-artwork-updated", scheduleRefresh);
+    const unlistenBattleNet = listen("battlenet-artwork-updated", scheduleRefresh);
+    const unlistenPlaytime = listen("playtime-updated", scheduleRefresh);
+    const unlistenMetadata = listen("metadata-updated", scheduleRefresh);
+    const unlistenAchievements = listen("retro-achievements-updated", scheduleRefresh);
+    const unlistenSteamAchievements = listen("steam-achievements-updated", scheduleRefresh);
+    const unlistenSteamAchievementSettings = listen("steam-achievements-settings-updated", scheduleRefresh);
+    const unlistenSteamOwnedGames = listen("steam-owned-games-updated", scheduleRefresh);
     // Fires when a ROM directory scan starts and again when it ends (see
-    // `commands::spawn_rom_scan`) — refreshing on both is harmless (the
-    // "starts" one is a no-op re-fetch of the same data) and means the
-    // library picks up the rescan the moment it's actually done.
-    const unlistenRomScan = listen("rom-scan-status", refresh);
+    // `commands::spawn_rom_scan`) — only the completed scan needs a new
+    // snapshot.
+    const unlistenRomScan = listen<boolean>("rom-scan-status", (event) => {
+      if (!event.payload) scheduleRefresh();
+    });
     return () => {
+      disposed = true;
+      if (refreshTimerRef.current !== null) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      refreshPendingRef.current = false;
       unlistenRetro.then((fn) => fn());
       unlistenBattleNet.then((fn) => fn());
       unlistenPlaytime.then((fn) => fn());

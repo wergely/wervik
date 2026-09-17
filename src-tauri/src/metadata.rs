@@ -267,7 +267,6 @@ struct WervikGameMetadata {
     rating: Option<f64>,
     rating_count: Option<u64>,
     cover_url: Option<String>,
-    hero_url: Option<String>,
     screenshot_urls: Vec<String>,
 }
 
@@ -885,9 +884,15 @@ pub fn spawn_fetch(
                     let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                        let image_paths = [metadata.cover_path.clone(), metadata.hero_path.clone()]
+                            .into_iter()
+                            .flatten()
+                            .chain(metadata.screenshot_paths.iter().cloned())
+                            .collect::<Vec<_>>();
                         if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
                             eprintln!("Could not save metadata for {}: {error}", game.name);
                         } else {
+                            state.known_image_paths.extend(image_paths);
                             state.dedupe_rom_games_by_metadata();
                             let _ = app_handle.emit("metadata-updated", &game.id);
                             updated = true;

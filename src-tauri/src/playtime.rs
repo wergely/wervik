@@ -37,7 +37,6 @@ impl PlaytimeSummary {
 
 #[derive(Debug)]
 pub struct FinishedSession {
-    pub session_id: i64,
     pub game_id: String,
     pub source: String,
     pub duration_seconds: u64,
@@ -221,7 +220,6 @@ impl PlaytimeDb {
         transaction.commit().map_err(|e| e.to_string())?;
 
         Ok(Some(FinishedSession {
-            session_id,
             game_id,
             source,
             duration_seconds,

@@ -127,7 +127,14 @@ export function PlatformDetail({ platformKey, onBack }: PlatformDetailProps) {
 
       <div className={styles.hero}>
         {artworkUrl ? (
-          <img className={styles.heroImage} src={artworkUrl} alt="" draggable={false} />
+          <img
+            className={styles.heroImage}
+            src={artworkUrl}
+            alt=""
+            draggable={false}
+            loading="eager"
+            decoding="async"
+          />
         ) : (
           <div className={styles.heroFallbackIcon}>
             <PlatformIcon source="retro" platformKey={platform.key} size={120} />

@@ -15,13 +15,13 @@ interface AchievementGameCardProps {
  * earned/total count) rather than the usual browsing badges (source,
  * favorite, IGDB score...). */
 export function AchievementGameCard({ entry, coverPath, onSelect }: AchievementGameCardProps) {
-  const { url, failed } = useArtwork(coverPath);
+  const { url, failed, ref: artworkRef } = useArtwork(coverPath, { lazy: true });
 
   return (
     <button type="button" className={styles.card} data-nav-item onClick={onSelect} aria-label={entry.gameName}>
-      <div className={styles.art}>
+      <div className={styles.art} ref={artworkRef}>
         {url && !failed ? (
-          <img src={url} alt="" draggable={false} />
+          <img src={url} alt="" draggable={false} loading="lazy" decoding="async" />
         ) : (
           <div className={styles.placeholder}>
             <span>{entry.gameName}</span>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  getGameScreenshotPaths,
   getGameMetadata,
   getNexusMods,
   getRetroAchievements,
@@ -172,7 +173,13 @@ function MetadataScreenshot({
       onClick={(event) => onOpen(path, index, gallery, event.currentTarget)}
       aria-label={`Open screenshot ${index + 1} full screen`}
     >
-      <img src={image.url} alt={`Screenshot ${index + 1}`} draggable={false} />
+      <img
+        src={image.url}
+        alt={`Screenshot ${index + 1}`}
+        draggable={false}
+        loading="lazy"
+        decoding="async"
+      />
     </button>
   );
 }
@@ -222,6 +229,7 @@ export function GameDetail({
   const [metadata, setMetadata] = useState<GameMetadata | null>(null);
   const [metadataLoading, setMetadataLoading] = useState(true);
   const [metadataRefreshing, setMetadataRefreshing] = useState(false);
+  const [localScreenshotPaths, setLocalScreenshotPaths] = useState(game.localScreenshotPaths);
   const [nexusMods, setNexusMods] = useState<NexusMod[] | null>(null);
   const [nexusLoading, setNexusLoading] = useState(true);
   const [achievements, setAchievements] = useState<DisplayAchievements | null>(null);
@@ -257,6 +265,22 @@ export function GameDetail({
     setSelectedVariantId(null);
     setLaunching(false);
   }, [game.id, game.source, game.appId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLocalScreenshotPaths([]);
+    if (game.source !== "retro") return;
+    getGameScreenshotPaths(game.id)
+      .then((paths) => {
+        if (!cancelled) setLocalScreenshotPaths(paths);
+      })
+      .catch(() => {
+        if (!cancelled) setLocalScreenshotPaths([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [game.id, game.source]);
 
   const closeLightbox = useCallback(() => {
     setLightboxGallery([]);
@@ -479,7 +503,7 @@ export function GameDetail({
       <div className={styles.content}>
         <div className={styles.sidebar}>
           <div className={styles.cover}>
-            {cover.url && !cover.failed && <img src={cover.url} alt="" draggable={false} />}
+            {cover.url && !cover.failed && <img src={cover.url} alt="" draggable={false} decoding="async" />}
           </div>
 
           {/* Play (and everything needed to configure it) lives right below
@@ -736,19 +760,19 @@ export function GameDetail({
             </section>
           )}
 
-          {game.localScreenshotPaths.length > 0 && (
+          {localScreenshotPaths.length > 0 && (
             <section className={styles.localScreenshotsSection} aria-label="Achievement screenshots">
               <div className={styles.localScreenshotsHeading}>
                 <h2 className={styles.localScreenshotsTitle}>Achievement screenshots</h2>
                 <span className={styles.localScreenshotsCredit}>RetroArch</span>
               </div>
               <div className={styles.screenshots}>
-                {game.localScreenshotPaths.map((path, index) => (
+                {localScreenshotPaths.map((path, index) => (
                   <MetadataScreenshot
                     key={path}
                     path={path}
                     index={index}
-                    gallery={game.localScreenshotPaths}
+                    gallery={localScreenshotPaths}
                     onOpen={openLightbox}
                   />
                 ))}
@@ -938,6 +962,7 @@ export function GameDetail({
                 src={lightboxImage.url}
                 alt={`Expanded game screenshot ${lightboxIndex + 1}`}
                 draggable={false}
+                decoding="async"
                 style={{ transform: `scale(${lightboxZoom})` }}
               />
             ) : (

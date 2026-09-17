@@ -1,3 +1,5 @@
+#![allow(linker_messages)]
+
 mod battlenet;
 mod commands;
 mod ea;
@@ -180,6 +182,7 @@ pub fn run() {
                 rom_scan_running,
                 app_handle,
                 artwork_fetch_running,
+                known_image_paths: std::collections::HashSet::new(),
                 artwork_progress,
                 cloud_sync_running,
                 cloud_sync_requested,
@@ -191,6 +194,7 @@ pub fn run() {
             // metadata queue, so cached non-installed titles get enriched on
             // the same startup pass as locally installed games.
             state.start_steam_owned_fetch();
+            state.rebuild_known_image_paths();
             let metadata_queries = state.metadata_queries();
             let achievement_queries = state.achievement_queries();
             let metadata_fetch_running = state.metadata_fetch_running.clone();
@@ -218,6 +222,7 @@ pub fn run() {
             // be able to see the managed state immediately.
             if let Some(state) = app.try_state::<Mutex<AppState>>() {
                 let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state.rebuild_known_image_paths();
                 state.start_steam_owned_fetch();
                 state.start_steam_achievements_fetch();
             }
@@ -247,6 +252,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_library,
+            commands::get_game_screenshot_paths,
             commands::get_game_metadata,
             commands::refresh_game_metadata,
             commands::get_nexus_mods,

@@ -23,6 +23,10 @@ export function getLibrary(): Promise<LibrarySnapshot> {
   return invoke("get_library");
 }
 
+export function getGameScreenshotPaths(id: string): Promise<string[]> {
+  return invoke("get_game_screenshot_paths", { id });
+}
+
 export function getGameMetadata(
   gameId: string,
   gameName: string,
