@@ -115,6 +115,8 @@ pub fn run() {
             let artwork_fetch_running = Arc::new(AtomicBool::new(false));
             let rom_scan_running = Arc::new(AtomicBool::new(false));
             let artwork_progress = Arc::new(commands::ArtworkProgressState::default());
+            let cloud_sync_running = Arc::new(AtomicBool::new(false));
+            let cloud_sync_requested = Arc::new(AtomicBool::new(false));
             // Picks up box art for anything the last scan left uncovered
             // (e.g. Wervik was closed before a previous fetch finished, or
             // this feature is new and the ROM library predates it).
@@ -175,6 +177,8 @@ pub fn run() {
                 app_handle,
                 artwork_fetch_running,
                 artwork_progress,
+                cloud_sync_running,
+                cloud_sync_requested,
             };
             state.seed_provider_playtime();
             state.dedupe_rom_games_by_metadata();
@@ -196,6 +200,7 @@ pub fn run() {
                 .map(|account| account.access_token)
                 .filter(|token| !token.trim().is_empty());
             app.manage(Mutex::new(state));
+            commands::schedule_wervik_cloud_sync(app.handle());
             #[cfg(desktop)]
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {

@@ -6,7 +6,9 @@ Wervik is a fast, controller-friendly desktop library for browsing
 and launching your installed Steam and retro games on macOS and Windows. On
 Windows it also supports Xbox App/Game Pass, Battle.net, and EA App. It
 reads local library data directly and can optionally enrich the selected game's
-details through IGDB — no Wervik account or cloud library is required.
+details through IGDB. Connecting a Wervik account optionally syncs the local
+library, playtime and cached achievement progress to the web app; the desktop
+library remains usable without an account.
 
 Wervik — by Wergely.
 

@@ -29,11 +29,15 @@ export function useWervikAccount() {
     const settingsFailed = listen<string>("wervik-settings-sync-error", (event) => {
       setError(event.payload);
     });
+    const cloudSyncFailed = listen<string>("wervik-cloud-sync-error", (event) => {
+      setError(event.payload);
+    });
 
     return () => {
       updated.then((unlisten) => unlisten());
       failed.then((unlisten) => unlisten());
       settingsFailed.then((unlisten) => unlisten());
+      cloudSyncFailed.then((unlisten) => unlisten());
     };
   }, []);
 

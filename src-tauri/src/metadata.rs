@@ -273,7 +273,10 @@ fn now_unix() -> i64 {
 /// developers running from source.
 fn credentials(stored_client_id: &str, stored_client_secret: &str) -> Option<(String, String)> {
     if !stored_client_id.trim().is_empty() && !stored_client_secret.trim().is_empty() {
-        return Some((stored_client_id.to_string(), stored_client_secret.to_string()));
+        return Some((
+            stored_client_id.to_string(),
+            stored_client_secret.to_string(),
+        ));
     }
     let client_id = std::env::var("WERVIK_IGDB_CLIENT_ID").ok()?;
     let client_secret = std::env::var("WERVIK_IGDB_CLIENT_SECRET").ok()?;
@@ -394,7 +397,8 @@ fn choose_result(
         } else {
             2
         };
-        let platform_rank = platform_rank(game.platforms.as_deref().unwrap_or(&[]), expected_platform);
+        let platform_rank =
+            platform_rank(game.platforms.as_deref().unwrap_or(&[]), expected_platform);
         (platform_rank, title_rank)
     });
     results.into_iter().next()
@@ -434,7 +438,12 @@ fn valid_image(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP")
 }
 
-fn download_image(agent: &Agent, url: &str, path: &Path, bearer_token: Option<&str>) -> Option<String> {
+fn download_image(
+    agent: &Agent,
+    url: &str,
+    path: &Path,
+    bearer_token: Option<&str>,
+) -> Option<String> {
     if path.is_file() {
         return Some(path.to_string_lossy().to_string());
     }
@@ -494,7 +503,8 @@ pub fn fetch_game(
     let agent = new_agent();
     match provider {
         MetadataProvider::Igdb => {
-            let Some((client_id, client_secret)) = credentials(stored_client_id, stored_client_secret)
+            let Some((client_id, client_secret)) =
+                credentials(stored_client_id, stored_client_secret)
             else {
                 return Ok(None);
             };
@@ -510,7 +520,8 @@ pub fn fetch_game(
             )
         }
         MetadataProvider::Wervik => {
-            let Some(access_token) = wervik_access_token.filter(|token| !token.trim().is_empty()) else {
+            let Some(access_token) = wervik_access_token.filter(|token| !token.trim().is_empty())
+            else {
                 return Ok(None);
             };
             fetch_game_from_wervik(
@@ -535,7 +546,8 @@ fn fetch_game_from_wervik(
     platform: Option<Platform>,
     force: bool,
 ) -> Result<Option<GameMetadata>, String> {
-    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
     let mut url = url::Url::parse(&configured_base)
         .map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
     url.set_path("/api/metadata/igdb");
@@ -664,9 +676,14 @@ fn fetch_game_with_token(
         .filter_map(|image| image_url(image.url, "t_1080p"))
         .collect();
 
-    let cover_path = cover_url
-        .as_deref()
-        .and_then(|url| download_image(&agent, url, &artwork_dir.join(format!("{key}-cover.jpg")), None));
+    let cover_path = cover_url.as_deref().and_then(|url| {
+        download_image(
+            &agent,
+            url,
+            &artwork_dir.join(format!("{key}-cover.jpg")),
+            None,
+        )
+    });
     let screenshot_paths: Vec<String> = screenshot_urls
         .iter()
         .take(MAX_SCREENSHOTS)
@@ -795,14 +812,16 @@ pub fn spawn_fetch(
         }
         let agent = new_agent();
         let access_token = match igdb_credentials.as_ref() {
-            Some((client_id, client_secret)) => match twitch_token(&agent, client_id, client_secret) {
-                Ok(token) => Some(token),
-                Err(error) => {
-                    eprintln!("IGDB metadata worker authentication failed: {error}");
-                    running.store(false, Ordering::SeqCst);
-                    return;
+            Some((client_id, client_secret)) => {
+                match twitch_token(&agent, client_id, client_secret) {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        eprintln!("IGDB metadata worker authentication failed: {error}");
+                        running.store(false, Ordering::SeqCst);
+                        return;
+                    }
                 }
-            },
+            }
             None => None,
         };
 
@@ -818,11 +837,15 @@ pub fn spawn_fetch(
         for game in pending {
             let result = match provider {
                 MetadataProvider::Igdb => {
-                    let (client_id, _) = igdb_credentials.as_ref().expect("validated IGDB credentials");
+                    let (client_id, _) = igdb_credentials
+                        .as_ref()
+                        .expect("validated IGDB credentials");
                     fetch_game_with_token(
                         &agent,
                         client_id,
-                        access_token.as_deref().expect("validated IGDB access token"),
+                        access_token
+                            .as_deref()
+                            .expect("validated IGDB access token"),
                         &app_data_dir,
                         &game.id,
                         &game.name,
@@ -831,7 +854,9 @@ pub fn spawn_fetch(
                 }
                 MetadataProvider::Wervik => fetch_game_from_wervik(
                     &agent,
-                    wervik_access_token.as_deref().expect("validated Wervik access token"),
+                    wervik_access_token
+                        .as_deref()
+                        .expect("validated Wervik access token"),
                     &app_data_dir,
                     &game.id,
                     &game.name,
@@ -841,6 +866,7 @@ pub fn spawn_fetch(
             };
             match result {
                 Ok(Some(metadata)) => {
+                    let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
@@ -848,7 +874,11 @@ pub fn spawn_fetch(
                         } else {
                             state.dedupe_rom_games_by_metadata();
                             let _ = app_handle.emit("metadata-updated", &game.id);
+                            updated = true;
                         }
+                    }
+                    if updated {
+                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
                     }
                 }
                 Ok(None) => {
@@ -941,7 +971,10 @@ mod tests {
         // IGDB returned the Switch game first, ahead of the SNES original.
         let results = vec![switch_star_fox, snes_star_fox];
         let chosen = choose_result(results, "Star Fox", Some(Platform::Snes)).unwrap();
-        assert_eq!(chosen.id, 2, "should have picked the SNES release, not the Switch one");
+        assert_eq!(
+            chosen.id, 2,
+            "should have picked the SNES release, not the Switch one"
+        );
     }
 
     #[test]

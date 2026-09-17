@@ -36,6 +36,7 @@ impl PlaytimeSummary {
 
 #[derive(Debug)]
 pub struct FinishedSession {
+    pub session_id: i64,
     pub game_id: String,
     pub source: String,
     pub duration_seconds: u64,
@@ -175,16 +176,17 @@ impl PlaytimeDb {
             .connection
             .unchecked_transaction()
             .map_err(|e| e.to_string())?;
-        let Some((game_id, source, started_at)) = transaction
+        let Some((session_id, game_id, source, started_at)) = transaction
             .query_row(
-                "SELECT game_id, source, started_at FROM playtime_sessions
+                "SELECT id, game_id, source, started_at FROM playtime_sessions
                  WHERE id = ?1 AND ended_at IS NULL",
                 params![session_id],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 },
             )
@@ -218,11 +220,38 @@ impl PlaytimeDb {
         transaction.commit().map_err(|e| e.to_string())?;
 
         Ok(Some(FinishedSession {
+            session_id,
             game_id,
             source,
             duration_seconds,
             ended_at,
         }))
+    }
+
+    pub fn finished_sessions(&self) -> Result<Vec<FinishedSessionRecord>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, game_id, source, started_at, ended_at, duration_seconds
+                 FROM playtime_sessions
+                 WHERE ended_at IS NOT NULL AND duration_seconds IS NOT NULL
+                 ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(FinishedSessionRecord {
+                    session_id: row.get(0)?,
+                    game_id: row.get(1)?,
+                    source: row.get(2)?,
+                    started_at: row.get(3)?,
+                    ended_at: row.get(4)?,
+                    duration_seconds: row.get::<_, i64>(5)?.max(0) as u64,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// A session that never found its game process should not add phantom
@@ -259,6 +288,16 @@ impl PlaytimeDb {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct FinishedSessionRecord {
+    pub session_id: i64,
+    pub game_id: String,
+    pub source: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub duration_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -350,7 +389,12 @@ fn game_process_is_running(system: &System, target: &ProcessTarget) -> bool {
 /// status just ended (see the `playtime-updated` emit below and in
 /// `commands::finish_playtime_session`) — the session itself is tracked by
 /// `session_id` alone, same as before.
-pub fn spawn_process_monitor(app_handle: AppHandle, session_id: i64, game_id: String, target: ProcessTarget) {
+pub fn spawn_process_monitor(
+    app_handle: AppHandle,
+    session_id: i64,
+    game_id: String,
+    target: ProcessTarget,
+) {
     std::thread::spawn(move || {
         let mut system = System::new();
         let deadline = Instant::now() + STARTUP_GRACE;

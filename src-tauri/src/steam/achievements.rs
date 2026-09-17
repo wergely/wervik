@@ -135,6 +135,22 @@ impl SteamAchievementsCache {
             .map(|entry| entry.achievements.clone())
     }
 
+    pub fn snapshots(&self, steam_id64: &str) -> Vec<(String, GameAchievements, i64)> {
+        if self.steam_id64.as_deref() != Some(steam_id64) {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .map(|(game_id, entry)| {
+                (
+                    game_id.clone(),
+                    entry.achievements.clone(),
+                    entry.fetched_at,
+                )
+            })
+            .collect()
+    }
+
     pub fn recent_miss(&self, game_id: &str, steam_id64: &str) -> bool {
         if self.steam_id64.as_deref() != Some(steam_id64) {
             return false;
@@ -441,6 +457,7 @@ pub fn spawn_fetch(
         {
             match fetch_for_game(&api_key, &steam_id64, app_id) {
                 Ok(Some(achievements)) => {
+                    let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
                         if let Err(error) = state.steam_achievements_cache.put(
@@ -453,7 +470,11 @@ pub fn spawn_fetch(
                             );
                         } else {
                             let _ = app_handle.emit("steam-achievements-updated", &game_id);
+                            updated = true;
                         }
+                    }
+                    if updated {
+                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
                     }
                 }
                 Ok(None) => {

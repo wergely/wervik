@@ -19,7 +19,7 @@ use crate::mangohud::{self, MangoHudConfig};
 use crate::metadata::{self, GameMetadata, MetadataCache, MetadataProgress};
 use crate::nexus::{self, NexusCache, NexusMod};
 use crate::platform;
-use crate::playtime::{self, PlaytimeDb, ProcessTarget};
+use crate::playtime::{self, FinishedSessionRecord, PlaytimeDb, ProcessTarget};
 use crate::retro::discovery::RomGame;
 use crate::retro::platform::Platform;
 use crate::retro::{
@@ -81,6 +81,10 @@ pub struct AppState {
     /// progress indicator even if it missed the `retro-artwork-progress`
     /// events (e.g. it wasn't mounted yet when the fetch on startup began).
     pub artwork_progress: Arc<ArtworkProgressState>,
+    /// Coalesces library, playtime and achievement uploads when several
+    /// local cache updates arrive close together.
+    pub cloud_sync_running: Arc<AtomicBool>,
+    pub cloud_sync_requested: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -264,7 +268,10 @@ impl AppState {
         let settings = self.store.settings();
         if let Some(steam_id64) = steam_id64 {
             if settings.steam_api_key.trim().is_empty()
-                || self.steam_owned_games_cache.get_fresh(&steam_id64).is_some()
+                || self
+                    .steam_owned_games_cache
+                    .get_fresh(&steam_id64)
+                    .is_some()
             {
                 return;
             }
@@ -326,9 +333,9 @@ impl AppState {
                     .seed_if_missing(&game.id, 0, self.store.local_last_played(&game.id));
         }
         for game in &self.ea_games {
-            let _ = self
-                .playtime
-                .seed_if_missing(&game.id, 0, self.store.local_last_played(&game.id));
+            let _ =
+                self.playtime
+                    .seed_if_missing(&game.id, 0, self.store.local_last_played(&game.id));
         }
     }
 
@@ -359,8 +366,9 @@ impl AppState {
             let _ = app_handle.emit("rom-scan-status", true);
             let (tagged, untagged): (Vec<_>, Vec<_>) =
                 dirs.into_iter().partition(|dir| dir.platform_key.is_some());
-            let mut scanned =
-                retro_discovery::scan_directories(&untagged.into_iter().map(|dir| dir.path).collect::<Vec<_>>());
+            let mut scanned = retro_discovery::scan_directories(
+                &untagged.into_iter().map(|dir| dir.path).collect::<Vec<_>>(),
+            );
             for dir in tagged {
                 // `platform_key` is only `Some` here (guaranteed by the
                 // `partition` above); an unrecognized key (e.g. a save from
@@ -395,9 +403,10 @@ impl AppState {
                 // pass only when that provider is unavailable.
                 let settings = state.store.settings();
                 let metadata_available = match settings.metadata_provider {
-                    MetadataProvider::Igdb => {
-                        metadata::is_configured(&settings.igdb_client_id, &settings.igdb_client_secret)
-                    }
+                    MetadataProvider::Igdb => metadata::is_configured(
+                        &settings.igdb_client_id,
+                        &settings.igdb_client_secret,
+                    ),
                     MetadataProvider::Wervik => state
                         .store
                         .wervik_account()
@@ -415,6 +424,7 @@ impl AppState {
                 state.start_metadata_fetch();
                 state.start_achievements_fetch();
             }
+            schedule_wervik_cloud_sync(&app_handle);
             running.store(false, Ordering::SeqCst);
             let _ = app_handle.emit("rom-scan-status", false);
         });
@@ -567,7 +577,12 @@ fn start_process_session(
 ) -> Result<(), String> {
     let session_id = state.playtime.start_session(game_id, source, now_unix())?;
     let target = ProcessTarget::from_install_dir(install_dir);
-    playtime::spawn_process_monitor(state.app_handle.clone(), session_id, game_id.to_string(), target);
+    playtime::spawn_process_monitor(
+        state.app_handle.clone(),
+        session_id,
+        game_id.to_string(),
+        target,
+    );
     Ok(())
 }
 
@@ -589,7 +604,10 @@ pub(crate) fn finish_playtime_session(app_handle: &tauri::AppHandle, session_id:
             finished.ended_at,
         );
     }
-    let _ = app_handle.emit("playtime-updated", &finished.game_id);
+    let game_id = finished.game_id.clone();
+    drop(state);
+    let _ = app_handle.emit("playtime-updated", &game_id);
+    schedule_wervik_cloud_sync(app_handle);
 }
 
 /// Where a game came from. The frontend uses this to label/filter games and
@@ -1104,15 +1122,10 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
         });
     }
     let steam_achievements_account = state.steam_id64();
-    let steam_achievements_enabled =
-        !state.store.settings().steam_api_key.trim().is_empty()
-            && steam_achievements_account.is_some();
+    let steam_achievements_enabled = !state.store.settings().steam_api_key.trim().is_empty()
+        && steam_achievements_account.is_some();
 
-    let installed_steam_ids: HashSet<u32> = state
-        .games
-        .iter()
-        .map(|game| game.app_id)
-        .collect();
+    let installed_steam_ids: HashSet<u32> = state.games.iter().map(|game| game.app_id).collect();
     let mut games: Vec<GameDto> = state
         .games
         .iter()
@@ -1194,9 +1207,7 @@ fn library_snapshot(state: &AppState) -> LibrarySnapshot {
                 .and_then(|achievements| achievements.completion_percent()),
             GameSource::Steam if steam_achievements_enabled => steam_achievements_account
                 .as_deref()
-                .and_then(|steam_id64| {
-                    state.steam_achievements_cache.get(&game.id, steam_id64)
-                })
+                .and_then(|steam_id64| state.steam_achievements_cache.get(&game.id, steam_id64))
                 .and_then(|achievements| achievements.completion_percent()),
             GameSource::Steam => None,
             GameSource::Xbox | GameSource::BattleNet | GameSource::Ea => None,
@@ -1257,14 +1268,19 @@ fn fetch_and_store_metadata(
         return Ok(None);
     };
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    state.metadata_cache.put(game_id.clone(), metadata.clone())?;
+    state
+        .metadata_cache
+        .put(game_id.clone(), metadata.clone())?;
     // Same event the background sweep emits on a hit (`metadata::spawn_fetch`)
     // — without it, nothing tells the frontend this game's cached metadata
     // just changed, and `useLibrary`'s snapshot (in particular, whatever
     // page already has this game's *old* name/cover loaded) never refreshes
     // to reflect a corrected match (e.g. after "Refresh metadata" or
     // retagging the ROM directory's platform).
-    let _ = state.app_handle.emit("metadata-updated", &game_id);
+    let app_handle = state.app_handle.clone();
+    let _ = app_handle.emit("metadata-updated", &game_id);
+    drop(state);
+    schedule_wervik_cloud_sync(&app_handle);
     Ok(Some(metadata))
 }
 
@@ -1426,7 +1442,12 @@ pub fn get_retro_achievements(
     match retroachievements::fetch_for_game(&username, &api_key, rom.platform, &rom.name) {
         Ok(Some(achievements)) => {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            state.retro_achievements_cache.put(game_id, achievements.clone())?;
+            state
+                .retro_achievements_cache
+                .put(game_id, achievements.clone())?;
+            let app_handle = state.app_handle.clone();
+            drop(state);
+            schedule_wervik_cloud_sync(&app_handle);
             Ok(Some(achievements))
         }
         Ok(None) => Ok(None),
@@ -1493,6 +1514,9 @@ pub fn get_steam_achievements(
             state
                 .steam_achievements_cache
                 .put(game_id, &steam_id64, achievements.clone())?;
+            let app_handle = state.app_handle.clone();
+            drop(state);
+            schedule_wervik_cloud_sync(&app_handle);
             Ok(Some(achievements))
         }
         Ok(None) => {
@@ -1620,7 +1644,8 @@ pub fn get_achievements_overview(state: State<AppStateHandle>) -> AchievementsOv
     if let Some(steam_id64) = state.steam_id64() {
         for game in &state.games {
             let game_id = game.app_id.to_string();
-            let Some(achievements) = state.steam_achievements_cache.get(&game_id, &steam_id64) else {
+            let Some(achievements) = state.steam_achievements_cache.get(&game_id, &steam_id64)
+            else {
                 continue;
             };
             if achievements.total_count == 0 {
@@ -1681,8 +1706,14 @@ pub fn get_achievements_overview(state: State<AppStateHandle>) -> AchievementsOv
 /// request — RA has no local cache for it — but it's cheap: one request,
 /// not one per game.
 #[tauri::command(async)]
-pub fn get_ra_profile_summary(state: State<AppStateHandle>) -> Result<Option<RaProfileSummary>, String> {
-    let settings = state.lock().unwrap_or_else(|e| e.into_inner()).store.settings();
+pub fn get_ra_profile_summary(
+    state: State<AppStateHandle>,
+) -> Result<Option<RaProfileSummary>, String> {
+    let settings = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .settings();
     let username = settings.ra_username.trim().to_string();
     let api_key = settings.ra_api_key.trim().to_string();
     if username.is_empty() || api_key.is_empty() {
@@ -1707,7 +1738,11 @@ pub fn apply_retroarch_achievements(
     password: String,
     hardcore: bool,
 ) -> Result<(), String> {
-    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
+    let app_data_dir = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .app_data_dir
+        .clone();
     if enabled {
         retro_native::enable_retroarch_achievements(&app_data_dir, &username, &password, hardcore)
     } else {
@@ -1729,7 +1764,11 @@ pub fn apply_pcsx2_achievements(
     password: String,
     hardcore: bool,
 ) -> Result<(), String> {
-    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
+    let app_data_dir = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .app_data_dir
+        .clone();
     if enabled {
         retro_native::enable_pcsx2_achievements(&app_data_dir, &username, &password, hardcore)
     } else {
@@ -1743,12 +1782,20 @@ pub fn rescan_library(state: State<AppStateHandle>) -> LibrarySnapshot {
     // Re-detect Steam in case it was installed/moved since last scan.
     state.steam_install = discovery::find_steam_install();
     state.rescan();
-    library_snapshot(&state)
+    let app_handle = state.app_handle.clone();
+    let snapshot = library_snapshot(&state);
+    drop(state);
+    schedule_wervik_cloud_sync(&app_handle);
+    snapshot
 }
 
 #[tauri::command(async)]
 pub fn get_rom_directories(state: State<AppStateHandle>) -> Vec<RomDirectoryConfig> {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.rom_directories()
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .rom_directories()
 }
 
 #[tauri::command(async)]
@@ -2052,7 +2099,11 @@ pub fn install_native_emulator(
     platform: String,
     emulator_id: String,
 ) -> Result<(), String> {
-    let app_data_dir = state.lock().unwrap_or_else(|e| e.into_inner()).app_data_dir.clone();
+    let app_data_dir = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .app_data_dir
+        .clone();
     let platform = Platform::from_key(&platform)
         .ok_or_else(|| format!("\"{platform}\" is not a known platform."))?;
     retro_native::install(&app_data_dir, platform, &emulator_id)
@@ -2164,7 +2215,11 @@ pub fn apply_platform_setup(
 
 #[tauri::command(async)]
 pub fn get_bios_path(state: State<AppStateHandle>, platform: String) -> Option<String> {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.bios_path(&platform)
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .bios_path(&platform)
 }
 
 /// Copies the user-selected BIOS file into Wervik's own app data directory
@@ -2185,7 +2240,11 @@ pub fn set_bios_path(
 
 #[tauri::command(async)]
 pub fn clear_bios_path(state: State<AppStateHandle>, platform: String) {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.set_bios_path(&platform, None);
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .set_bios_path(&platform, None);
 }
 
 #[tauri::command(async)]
@@ -2365,6 +2424,9 @@ pub fn open_steam_page(state: State<AppStateHandle>, app_id: u32) -> Result<(), 
 pub fn set_favorite(state: State<AppStateHandle>, id: String, favorite: bool) {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
     state.store.set_favorite(&id, favorite);
+    let app_handle = state.app_handle.clone();
+    drop(state);
+    schedule_wervik_cloud_sync(&app_handle);
 }
 
 /// Stores a local like/dislike preference for a game. Passing `null` clears
@@ -2381,15 +2443,24 @@ pub fn set_game_reaction(
             return Err("Game reaction must be like or dislike".into());
         }
     }
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.set_game_reaction(&id, reaction);
+    let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+    state.store.set_game_reaction(&id, reaction);
+    let app_handle = state.app_handle.clone();
+    drop(state);
+    schedule_wervik_cloud_sync(&app_handle);
     Ok(())
 }
 
 const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
-const WERVIK_REDIRECT_SCHEME: &str = if cfg!(debug_assertions) { "wervik-dev" } else { "wervik" };
+const WERVIK_REDIRECT_SCHEME: &str = if cfg!(debug_assertions) {
+    "wervik-dev"
+} else {
+    "wervik"
+};
 const WERVIK_ACCOUNT_UPDATED_EVENT: &str = "wervik-account-updated";
 const WERVIK_ACCOUNT_ERROR_EVENT: &str = "wervik-account-error";
 const WERVIK_SETTINGS_SYNC_ERROR_EVENT: &str = "wervik-settings-sync-error";
+const WERVIK_CLOUD_SYNC_ERROR_EVENT: &str = "wervik-cloud-sync-error";
 const WERVIK_CONNECT_DURATION_S: i64 = 5 * 60;
 
 #[derive(Debug, Serialize)]
@@ -2417,6 +2488,72 @@ struct WervikSettingsRequest<'a> {
     settings: &'a Settings,
 }
 
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudLibraryGame {
+    source: String,
+    source_game_id: String,
+    igdb_id: Option<u64>,
+    name: String,
+    platform: Option<String>,
+    platform_key: Option<String>,
+    is_installed: bool,
+    is_favorite: bool,
+    reaction: Option<String>,
+    playtime_seconds: u64,
+    last_played: Option<i64>,
+    achievement_completion_percent: Option<u8>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudPlaytimeSession {
+    local_session_id: i64,
+    source: String,
+    source_game_id: String,
+    started_at: i64,
+    ended_at: i64,
+    duration_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudAchievementSnapshot {
+    source: String,
+    source_game_id: String,
+    igdb_id: Option<u64>,
+    name: String,
+    platform: Option<String>,
+    payload: serde_json::Value,
+    fetched_at: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudLibraryRequest {
+    games: Vec<WervikCloudLibraryGame>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudPlaytimeRequest {
+    sessions: Vec<WervikCloudPlaytimeSession>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct WervikCloudAchievementsRequest {
+    replace: bool,
+    snapshots: Vec<WervikCloudAchievementSnapshot>,
+}
+
+#[derive(Debug)]
+struct WervikCloudSyncPayload {
+    library: WervikCloudLibraryRequest,
+    playtime: WervikCloudPlaytimeRequest,
+    achievements: WervikCloudAchievementsRequest,
+}
+
 fn random_connect_value() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>())
 }
@@ -2431,8 +2568,10 @@ fn web_connect_url(
     code_challenge: &str,
     redirect_scheme: &str,
 ) -> Result<String, String> {
-    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
-    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url =
+        Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
     url.set_path("/api/connect/desktop/start");
     url.query_pairs_mut()
         .append_pair("state", state)
@@ -2447,8 +2586,10 @@ fn exchange_desktop_connect(
     state: String,
     pending: PendingWervikConnect,
 ) -> Result<WervikAccount, String> {
-    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
-    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url =
+        Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
     url.set_path("/api/connect/desktop/exchange");
 
     let request = DesktopConnectExchangeRequest {
@@ -2488,8 +2629,10 @@ fn sync_wervik_settings(account: &WervikAccount, settings: &Settings) -> Result<
         return Ok(());
     }
 
-    let configured_base = std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
-    let mut url = Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let mut url =
+        Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
     url.set_path("/api/settings");
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -2505,6 +2648,251 @@ fn sync_wervik_settings(account: &WervikAccount, settings: &Settings) -> Result<
     Ok(())
 }
 
+fn game_source_name(source: GameSource) -> &'static str {
+    match source {
+        GameSource::Steam => "steam",
+        GameSource::Retro => "retro",
+        GameSource::Xbox => "xbox",
+        GameSource::BattleNet => "battlenet",
+        GameSource::Ea => "ea",
+    }
+}
+
+fn build_wervik_cloud_sync_payload(
+    state: &AppState,
+) -> Option<(WervikAccount, WervikCloudSyncPayload)> {
+    let account = state
+        .store
+        .wervik_account()
+        .filter(|account| !account.access_token.trim().is_empty())?;
+    let snapshot = library_snapshot(state);
+    let game_lookup: HashMap<(String, String), &GameDto> = snapshot
+        .games
+        .iter()
+        .map(|game| {
+            (
+                (game_source_name(game.source).to_string(), game.id.clone()),
+                game,
+            )
+        })
+        .collect();
+
+    let library = snapshot
+        .games
+        .iter()
+        .map(|game| {
+            let playtime_seconds = state
+                .playtime
+                .summary(&game.id)
+                .ok()
+                .flatten()
+                .map(|summary| summary.total_seconds)
+                .unwrap_or_else(|| game.playtime_minutes.unwrap_or(0).saturating_mul(60));
+            WervikCloudLibraryGame {
+                source: game_source_name(game.source).to_string(),
+                source_game_id: game.id.clone(),
+                igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
+                name: game.name.clone(),
+                platform: game.platform.clone(),
+                platform_key: game.platform_key.clone(),
+                is_installed: game.is_installed,
+                is_favorite: game.is_favorite,
+                reaction: game.reaction.clone(),
+                playtime_seconds,
+                last_played: game.last_played,
+                achievement_completion_percent: game.achievement_completion_percent,
+            }
+        })
+        .collect();
+
+    let playtime = state
+        .playtime
+        .finished_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(
+            |session: FinishedSessionRecord| WervikCloudPlaytimeSession {
+                local_session_id: session.session_id,
+                source: session.source,
+                source_game_id: session.game_id,
+                started_at: session.started_at,
+                ended_at: session.ended_at,
+                duration_seconds: session.duration_seconds,
+            },
+        )
+        .collect();
+
+    let mut achievements = Vec::new();
+    for (game_id, game_achievements, fetched_at) in state.retro_achievements_cache.snapshots() {
+        let Some(game) = game_lookup.get(&("retro".to_string(), game_id.clone())) else {
+            continue;
+        };
+        let Ok(payload) = serde_json::to_value(game_achievements) else {
+            continue;
+        };
+        achievements.push(WervikCloudAchievementSnapshot {
+            source: "retro".to_string(),
+            source_game_id: game_id,
+            igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
+            name: game.name.clone(),
+            platform: game.platform.clone(),
+            payload,
+            fetched_at,
+        });
+    }
+    if let Some(steam_id64) = state.steam_id64() {
+        for (game_id, game_achievements, fetched_at) in
+            state.steam_achievements_cache.snapshots(&steam_id64)
+        {
+            let Some(game) = game_lookup.get(&("steam".to_string(), game_id.clone())) else {
+                continue;
+            };
+            let Ok(payload) = serde_json::to_value(game_achievements) else {
+                continue;
+            };
+            achievements.push(WervikCloudAchievementSnapshot {
+                source: "steam".to_string(),
+                source_game_id: game_id,
+                igdb_id: game.igdb_metadata.as_ref().map(|metadata| metadata.igdb_id),
+                name: game.name.clone(),
+                platform: None,
+                payload,
+                fetched_at,
+            });
+        }
+    }
+
+    Some((
+        account,
+        WervikCloudSyncPayload {
+            library: WervikCloudLibraryRequest { games: library },
+            playtime: WervikCloudPlaytimeRequest { sessions: playtime },
+            achievements: WervikCloudAchievementsRequest {
+                replace: true,
+                snapshots: achievements,
+            },
+        },
+    ))
+}
+
+fn post_wervik_sync<T: Serialize>(
+    agent: &ureq::Agent,
+    base_url: &Url,
+    account: &WervikAccount,
+    path: &str,
+    body: T,
+) -> Result<(), String> {
+    let mut url = base_url.clone();
+    url.set_path(path);
+    agent
+        .post(url.as_str())
+        .header("Authorization", &format!("Bearer {}", account.access_token))
+        .send_json(body)
+        .map_err(|error| format!("Could not sync Wervik Account data: {error}"))?;
+    Ok(())
+}
+
+fn sync_wervik_cloud(
+    account: &WervikAccount,
+    payload: &WervikCloudSyncPayload,
+) -> Result<(), String> {
+    let configured_base =
+        std::env::var("WERVIK_WEB_URL").unwrap_or_else(|_| WERVIK_WEB_URL.to_string());
+    let base_url =
+        Url::parse(&configured_base).map_err(|error| format!("Invalid Wervik web URL: {error}"))?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    post_wervik_sync(&agent, &base_url, account, "/api/sync/library", &payload.library)?;
+    for sessions in payload.playtime.sessions.chunks(1_000) {
+        post_wervik_sync(
+            &agent,
+            &base_url,
+            account,
+            "/api/sync/playtime",
+            WervikCloudPlaytimeRequest {
+                sessions: sessions.to_vec(),
+            },
+        )?;
+    }
+    for (index, snapshots) in payload.achievements.snapshots.chunks(50).enumerate() {
+        post_wervik_sync(
+            &agent,
+            &base_url,
+            account,
+            "/api/sync/achievements",
+            WervikCloudAchievementsRequest {
+                replace: index == 0,
+                snapshots: snapshots.to_vec(),
+            },
+        )?;
+    }
+    if payload.achievements.snapshots.is_empty() {
+        post_wervik_sync(
+            &agent,
+            &base_url,
+            account,
+            "/api/sync/achievements",
+            WervikCloudAchievementsRequest {
+                replace: true,
+                snapshots: Vec::new(),
+            },
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn schedule_wervik_cloud_sync(app: &tauri::AppHandle) {
+    let Some(state_handle) = app.try_state::<AppStateHandle>() else {
+        return;
+    };
+    let (running, requested) = {
+        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(account) = state.store.wervik_account() else {
+            return;
+        };
+        if account.access_token.trim().is_empty() {
+            return;
+        }
+        state.cloud_sync_requested.store(true, Ordering::SeqCst);
+        (
+            state.cloud_sync_running.clone(),
+            state.cloud_sync_requested.clone(),
+        )
+    };
+    if running
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            requested.store(false, Ordering::SeqCst);
+            let payload = app.try_state::<AppStateHandle>().and_then(|state_handle| {
+                let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+                build_wervik_cloud_sync_payload(&state)
+            });
+            if let Some((account, payload)) = payload {
+                if let Err(error) = sync_wervik_cloud(&account, &payload) {
+                    eprintln!("Wervik cloud sync failed: {error}");
+                    let _ = app.emit(WERVIK_CLOUD_SYNC_ERROR_EVENT, error);
+                }
+            }
+            if !requested.load(Ordering::SeqCst) {
+                break;
+            }
+        }
+        running.store(false, Ordering::SeqCst);
+        if requested.swap(false, Ordering::SeqCst) {
+            schedule_wervik_cloud_sync(&app);
+        }
+    });
+}
+
 pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
     if !matches!(url.scheme(), "wervik" | "wervik-dev")
         || url.host_str() != Some("auth")
@@ -2513,15 +2901,15 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         return;
     }
 
-    let callback_state = url.query_pairs().find_map(|(key, value)| {
-        (key == "state").then(|| value.into_owned())
-    });
-    let error = url.query_pairs().find_map(|(key, value)| {
-        (key == "error").then(|| value.into_owned())
-    });
-    let code = url.query_pairs().find_map(|(key, value)| {
-        (key == "code").then(|| value.into_owned())
-    });
+    let callback_state = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()));
+    let error = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "error").then(|| value.into_owned()));
+    let code = url
+        .query_pairs()
+        .find_map(|(key, value)| (key == "code").then(|| value.into_owned()));
 
     let Some(state_handle) = app.try_state::<AppStateHandle>() else {
         return;
@@ -2536,7 +2924,10 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
         });
         if !valid {
             state.store.clear_pending_wervik_connect();
-            let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, "The Wervik Account connection expired or is invalid.");
+            let _ = app.emit(
+                WERVIK_ACCOUNT_ERROR_EVENT,
+                "The Wervik Account connection expired or is invalid.",
+            );
             return;
         }
         pending.expect("validated pending Wervik connection")
@@ -2552,7 +2943,10 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
     let Some(code) = code else {
         let mut state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
         state.store.clear_pending_wervik_connect();
-        let _ = app.emit(WERVIK_ACCOUNT_ERROR_EVENT, "The Wervik Account callback did not include a code.");
+        let _ = app.emit(
+            WERVIK_ACCOUNT_ERROR_EVENT,
+            "The Wervik Account callback did not include a code.",
+        );
         return;
     };
 
@@ -2571,6 +2965,7 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
                 if let Err(error) = sync_wervik_settings(&account, &settings) {
                     let _ = app.emit(WERVIK_SETTINGS_SYNC_ERROR_EVENT, error);
                 }
+                schedule_wervik_cloud_sync(&app);
                 let _ = app.emit(WERVIK_ACCOUNT_UPDATED_EVENT, account);
             }
             Err(error) => {
@@ -2583,11 +2978,18 @@ pub(crate) fn finish_wervik_connect(app: tauri::AppHandle, url: Url) {
 
 #[tauri::command(async)]
 pub fn get_wervik_account(state: State<AppStateHandle>) -> Option<WervikAccount> {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.wervik_account()
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .wervik_account()
 }
 
 #[tauri::command(async)]
-pub fn connect_wervik_account(app: tauri::AppHandle, state: State<AppStateHandle>) -> Result<(), String> {
+pub fn connect_wervik_account(
+    app: tauri::AppHandle,
+    state: State<AppStateHandle>,
+) -> Result<(), String> {
     let url = {
         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
         let connect_state = random_connect_value();
@@ -2611,7 +3013,11 @@ pub fn connect_wervik_account(app: tauri::AppHandle, state: State<AppStateHandle
     };
 
     if let Err(error) = platform::open_url(&app, &url) {
-        state.lock().unwrap_or_else(|e| e.into_inner()).store.clear_pending_wervik_connect();
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .store
+            .clear_pending_wervik_connect();
         return Err(error);
     }
     Ok(())
@@ -2632,7 +3038,11 @@ pub fn disconnect_wervik_account(state: State<AppStateHandle>) -> Result<(), Str
 
 #[tauri::command(async)]
 pub fn get_settings(state: State<AppStateHandle>) -> Settings {
-    state.lock().unwrap_or_else(|e| e.into_inner()).store.settings()
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .store
+        .settings()
 }
 
 #[tauri::command(async)]
@@ -2703,6 +3113,8 @@ pub fn set_settings(
         });
     }
 
+    schedule_wervik_cloud_sync(&app);
+
     Ok(())
 }
 
@@ -2712,10 +3124,18 @@ pub fn set_settings(
 fn known_image_paths(state: &AppState) -> std::collections::HashSet<String> {
     let mut paths = std::collections::HashSet::new();
     for game in library_snapshot(state).games {
-        paths.extend([game.cover_path, game.hero_path, game.logo_path].into_iter().flatten());
+        paths.extend(
+            [game.cover_path, game.hero_path, game.logo_path]
+                .into_iter()
+                .flatten(),
+        );
     }
     for metadata in state.metadata_cache.values() {
-        paths.extend([metadata.cover_path.clone(), metadata.hero_path.clone()].into_iter().flatten());
+        paths.extend(
+            [metadata.cover_path.clone(), metadata.hero_path.clone()]
+                .into_iter()
+                .flatten(),
+        );
         paths.extend(metadata.screenshot_paths.iter().cloned());
     }
     paths
@@ -2826,7 +3246,11 @@ pub fn open_nexus_mod(state: State<AppStateHandle>, url: String) -> Result<(), S
     if !valid_host {
         return Err("Invalid Nexus Mods URL".into());
     }
-    let app = state.lock().unwrap_or_else(|e| e.into_inner()).app_handle.clone();
+    let app = state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .app_handle
+        .clone();
     platform::open_url(&app, &url)
 }
 
@@ -2951,10 +3375,7 @@ mod tests {
     #[test]
     fn a_platform_with_no_native_emulators_has_no_default() {
         let (store, dir) = temp_store("no-native-platform");
-        assert_eq!(
-            selected_emulator_id(&dir, Platform::Snes, &store),
-            ""
-        );
+        assert_eq!(selected_emulator_id(&dir, Platform::Snes, &store), "");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3036,5 +3457,4 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(dir);
     }
-
 }

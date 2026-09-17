@@ -130,7 +130,22 @@ impl RetroAchievementsCache {
     }
 
     pub fn get(&self, game_id: &str) -> Option<GameAchievements> {
-        self.entries.get(game_id).map(|entry| entry.achievements.clone())
+        self.entries
+            .get(game_id)
+            .map(|entry| entry.achievements.clone())
+    }
+
+    pub fn snapshots(&self) -> Vec<(String, GameAchievements, i64)> {
+        self.entries
+            .iter()
+            .map(|(game_id, entry)| {
+                (
+                    game_id.clone(),
+                    entry.achievements.clone(),
+                    entry.fetched_at,
+                )
+            })
+            .collect()
     }
 
     pub fn recent_miss(&self, game_id: &str) -> bool {
@@ -251,8 +266,8 @@ fn find_console_id(consoles: &[RaConsole], platform: Platform) -> Option<u32> {
         .iter()
         .filter_map(|console| {
             let name_words = words(&console.name);
-            let score =
-                name_words.intersection(&full_words).count() + name_words.intersection(&short_words).count();
+            let score = name_words.intersection(&full_words).count()
+                + name_words.intersection(&short_words).count();
             (score > 0).then_some((score, console))
         })
         .max_by_key(|(score, _)| *score)
@@ -331,7 +346,11 @@ fn fetch_consoles(agent: &Agent, api_key: &str) -> Result<Vec<RaConsole>, String
         .map_err(|error| format!("Could not read RetroAchievements console list: {error}"))
 }
 
-fn fetch_game_list(agent: &Agent, api_key: &str, console_id: u32) -> Result<Vec<RaGameListEntry>, String> {
+fn fetch_game_list(
+    agent: &Agent,
+    api_key: &str,
+    console_id: u32,
+) -> Result<Vec<RaGameListEntry>, String> {
     let url = format!(
         "https://retroachievements.org/API/API_GetGameList.php?y={api_key}&i={console_id}&f=1"
     );
@@ -381,7 +400,11 @@ fn fetch_progress(
     achievements.sort_by(|a, b| a.id.cmp(&b.id));
 
     let earned_count = achievements.iter().filter(|a| a.unlocked).count();
-    let points_earned = achievements.iter().filter(|a| a.unlocked).map(|a| a.points).sum();
+    let points_earned = achievements
+        .iter()
+        .filter(|a| a.unlocked)
+        .map(|a| a.points)
+        .sum();
     let points_total = achievements.iter().map(|a| a.points).sum();
 
     Ok(GameAchievements {
@@ -433,7 +456,15 @@ pub fn fetch_for_game(
     let agent = new_agent();
     let consoles = fetch_consoles(&agent, api_key)?;
     let mut game_lists = HashMap::new();
-    let Some(game_id) = resolve_game_id(&agent, api_key, &consoles, &mut game_lists, platform, rom_title)? else {
+    let Some(game_id) = resolve_game_id(
+        &agent,
+        api_key,
+        &consoles,
+        &mut game_lists,
+        platform,
+        rom_title,
+    )?
+    else {
         return Ok(None);
     };
     fetch_progress(&agent, api_key, username, game_id).map(Some)
@@ -474,11 +505,23 @@ where
 
 #[derive(Debug, Deserialize)]
 struct RaUserSummaryResponse {
-    #[serde(rename = "Rank", default, deserialize_with = "deserialize_flexible_u32")]
+    #[serde(
+        rename = "Rank",
+        default,
+        deserialize_with = "deserialize_flexible_u32"
+    )]
     rank: u32,
-    #[serde(rename = "TotalPoints", default, deserialize_with = "deserialize_flexible_u32")]
+    #[serde(
+        rename = "TotalPoints",
+        default,
+        deserialize_with = "deserialize_flexible_u32"
+    )]
     total_points: u32,
-    #[serde(rename = "TotalTruePoints", default, deserialize_with = "deserialize_flexible_u32")]
+    #[serde(
+        rename = "TotalTruePoints",
+        default,
+        deserialize_with = "deserialize_flexible_u32"
+    )]
     total_true_points: u32,
     #[serde(rename = "UserPic", default)]
     user_pic: Option<String>,
@@ -614,32 +657,57 @@ pub fn spawn_fetch(
         };
         let mut game_lists: HashMap<u32, Vec<RaGameListEntry>> = HashMap::new();
 
-        for query in games.into_iter().filter(|query| !should_skip(&app_handle, &query.id)) {
-            let outcome = resolve_game_id(&agent, &api_key, &consoles, &mut game_lists, query.platform, &query.name)
-                .and_then(|found| match found {
-                    Some(game_id) => fetch_progress(&agent, &api_key, &username, game_id).map(Some),
-                    None => Ok(None),
-                });
+        for query in games
+            .into_iter()
+            .filter(|query| !should_skip(&app_handle, &query.id))
+        {
+            let outcome = resolve_game_id(
+                &agent,
+                &api_key,
+                &consoles,
+                &mut game_lists,
+                query.platform,
+                &query.name,
+            )
+            .and_then(|found| match found {
+                Some(game_id) => fetch_progress(&agent, &api_key, &username, game_id).map(Some),
+                None => Ok(None),
+            });
             match outcome {
                 Ok(Some(achievements)) => {
+                    let mut updated = false;
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Err(error) = state.retro_achievements_cache.put(query.id.clone(), achievements) {
+                        if let Err(error) = state
+                            .retro_achievements_cache
+                            .put(query.id.clone(), achievements)
+                        {
                             eprintln!("Could not save achievements for {}: {error}", query.name);
                         } else {
                             let _ = app_handle.emit("retro-achievements-updated", &query.id);
+                            updated = true;
                         }
+                    }
+                    if updated {
+                        crate::commands::schedule_wervik_cloud_sync(&app_handle);
                     }
                 }
                 Ok(None) => {
                     if let Some(state) = app_handle.try_state::<AppStateHandle>() {
                         let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Err(error) = state.retro_achievements_cache.mark_miss(query.id.clone()) {
-                            eprintln!("Could not save achievements miss for {}: {error}", query.name);
+                        if let Err(error) =
+                            state.retro_achievements_cache.mark_miss(query.id.clone())
+                        {
+                            eprintln!(
+                                "Could not save achievements miss for {}: {error}",
+                                query.name
+                            );
                         }
                     }
                 }
-                Err(error) => eprintln!("RetroAchievements fetch failed for {}: {error}", query.name),
+                Err(error) => {
+                    eprintln!("RetroAchievements fetch failed for {}: {error}", query.name)
+                }
             }
             std::thread::sleep(SWEEP_REQUEST_DELAY);
         }
