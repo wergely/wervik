@@ -258,6 +258,8 @@ export default function App() {
     return (
       <div style={{ zoom: settings.uiScale, height: "100%" }}>
         <Welcome
+          settings={settings}
+          onUpdateSettings={updateSettings}
           onLibraryChange={applySnapshot}
           onDone={() => {
             setWelcomeForced(false);

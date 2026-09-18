@@ -1,22 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { getPlatformStatus, installNativeEmulator } from "../api/tauri";
 import { useWervikAccount } from "../hooks/useWervikAccount";
-import type { LibrarySnapshot, PlatformStatus } from "../types";
+import type { LibrarySnapshot, PlatformStatus, Settings as SettingsType } from "../types";
 import { Logo } from "./Logo";
 import { PlatformIcon } from "./PlatformIcon";
+import { RetroAchievementsFields } from "./RetroAchievementsFields";
 import { RomDirectoriesEditor } from "./RomDirectoriesEditor";
 import settingsStyles from "./Settings.module.css";
 import { Spinner } from "./Spinner";
 import styles from "./Welcome.module.css";
 
 interface WelcomeProps {
+  settings: SettingsType | null;
+  onUpdateSettings: (partial: Partial<SettingsType>) => void;
   onLibraryChange: (snapshot: LibrarySnapshot) => void;
   onDone: () => void;
 }
 
-const STEPS = ["Welcome", "Account", "Emulators", "ROM folders", "Done"];
+const STEPS = ["Welcome", "Account", "Emulators", "Achievements", "ROM folders", "Done"];
 
-export function Welcome({ onLibraryChange, onDone }: WelcomeProps) {
+export function Welcome({ settings, onUpdateSettings, onLibraryChange, onDone }: WelcomeProps) {
   const [step, setStep] = useState(0);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -45,8 +48,9 @@ export function Welcome({ onLibraryChange, onDone }: WelcomeProps) {
           {step === 0 && <IntroStep />}
           {step === 1 && <AccountStep />}
           {step === 2 && <EmulatorsStep />}
-          {step === 3 && <RomsStep onLibraryChange={onLibraryChange} />}
-          {step === 4 && <FinishStep />}
+          {step === 3 && <AchievementsStep settings={settings} onUpdateSettings={onUpdateSettings} />}
+          {step === 4 && <RomsStep onLibraryChange={onLibraryChange} />}
+          {step === 5 && <FinishStep />}
         </div>
 
         <div className={styles.nav}>
@@ -233,6 +237,25 @@ function EmulatorsStep() {
       <p className={styles.leadSmall}>
         You can install or switch emulators for any platform later from Platforms, or skip this for now.
       </p>
+    </div>
+  );
+}
+
+function AchievementsStep({
+  settings,
+  onUpdateSettings,
+}: {
+  settings: SettingsType | null;
+  onUpdateSettings: (partial: Partial<SettingsType>) => void;
+}) {
+  return (
+    <div className={styles.step}>
+      <h1 className={styles.title}>RetroAchievements</h1>
+      <p className={styles.lead}>
+        Optional — connect a RetroAchievements account to see your progress on the game page and unlock real-time
+        achievements (and Hardcore mode) in managed RetroArch/PCSX2 games.
+      </p>
+      <RetroAchievementsFields settings={settings} onUpdateSettings={onUpdateSettings} />
     </div>
   );
 }
