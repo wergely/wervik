@@ -10,6 +10,7 @@ import {
   launchXboxGame,
 } from "./api/tauri";
 import { AchievementsView } from "./components/AchievementsView";
+import { GameAchievements } from "./components/GameAchievements";
 import { GameDetail } from "./components/GameDetail";
 import { Header, type HeaderView } from "./components/Header";
 import { Home } from "./components/Home";
@@ -23,7 +24,7 @@ import { useControllerNavigation } from "./navigation/useControllerNavigation";
 import type { Game } from "./types";
 import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
-type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements";
+type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements" | "gameAchievements";
 
 export default function App() {
   const {
@@ -41,6 +42,9 @@ export default function App() {
   const [view, setView] = useState<View>("home");
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [selectedPlatformKey, setSelectedPlatformKey] = useState<string | null>(null);
+  // Where "Back" from the full achievements page should land — it's reachable
+  // both from the Achievements overview and from a game's own detail page.
+  const [achievementsOrigin, setAchievementsOrigin] = useState<"achievements" | "detail">("achievements");
   // Lets a nested overlay (e.g. the Game Setup drawer) intercept Escape/
   // gamepad B to close itself instead of the current view navigating back
   // to Home.
@@ -100,6 +104,13 @@ export default function App() {
     }
   }
 
+  function handleOpenGameAchievements(game: Game, origin: "achievements" | "detail") {
+    playSelectSound();
+    setSelectedGameId(game.id);
+    setAchievementsOrigin(origin);
+    setView("gameAchievements");
+  }
+
   function handleSelectPlatform(platform: { key: string }) {
     setSelectedPlatformKey(platform.key);
     setView("platformDetail");
@@ -148,6 +159,10 @@ export default function App() {
   function handleBack() {
     if (view === "platformDetail") {
       setView("platforms");
+      return;
+    }
+    if (view === "gameAchievements") {
+      setView(achievementsOrigin);
       return;
     }
     setView("home");
@@ -239,7 +254,7 @@ export default function App() {
       ? "settings"
       : view === "platforms" || view === "platformDetail"
         ? "platforms"
-        : view === "achievements"
+        : view === "achievements" || view === "gameAchievements"
           ? "achievements"
           : "home";
 
@@ -276,6 +291,17 @@ export default function App() {
             onToggleFavorite={toggleFavorite}
             onSetReaction={updateReaction}
             onSetHardcoreMode={updateHardcoreMode}
+            onOpenAchievements={(game) => handleOpenGameAchievements(game, "detail")}
+            registerBackHandler={setBackOverride}
+            registerNavScope={setNavScope}
+            isPlaying={playingGameId === selectedGame.id}
+            justFinishedGameId={justFinishedGameId}
+          />
+        ) : view === "gameAchievements" && selectedGame ? (
+          <GameAchievements
+            game={selectedGame}
+            onBack={handleBack}
+            onSetHardcoreMode={updateHardcoreMode}
             registerBackHandler={setBackOverride}
             registerNavScope={setNavScope}
             isPlaying={playingGameId === selectedGame.id}
@@ -284,7 +310,7 @@ export default function App() {
         ) : view === "achievements" ? (
           <AchievementsView
             snapshot={snapshot}
-            onSelectGame={handleSelectGame}
+            onSelectGame={(game) => handleOpenGameAchievements(game, "achievements")}
             registerBackHandler={setBackOverride}
             registerNavScope={setNavScope}
           />

@@ -4,8 +4,6 @@ import {
   getGameScreenshotPaths,
   getGameMetadata,
   getNexusMods,
-  getRetroAchievements,
-  getSteamAchievements,
   openInstallFolder,
   openNativeEmulatorSettings,
   openNexusMod,
@@ -17,18 +15,13 @@ import {
   refreshGameMetadata,
 } from "../api/tauri";
 import { useArtwork } from "../hooks/useArtwork";
+import { useGameAchievements } from "../hooks/useGameAchievements";
 import { useWervikAccount } from "../hooks/useWervikAccount";
-import type {
-  Game,
-  GameMetadata,
-  GameReaction,
-  NexusMod,
-  RaGameAchievements,
-  SteamGameAchievements,
-} from "../types";
+import type { Game, GameMetadata, GameReaction, NexusMod } from "../types";
+import { supportsHardcoreMode, toAchievementDetails, type DisplayAchievement } from "../utils/achievements";
 import { formatLastPlayed, formatPlaytime, formatSize, sourceLabel } from "../utils/format";
 import { ActiveFeaturesRow } from "./ActiveFeaturesRow";
-import { AchievementDetailsModal, type AchievementDetails } from "./AchievementDetailsModal";
+import { AchievementDetailsModal } from "./AchievementDetailsModal";
 import { BiosControl } from "./BiosControl";
 import { OverflowMenu } from "./OverflowMenu";
 import { SaveSyncStatus } from "./SaveSyncStatus";
@@ -44,6 +37,8 @@ interface GameDetailProps {
   onToggleFavorite: (id: string) => void;
   onSetReaction: (id: string, reaction: GameReaction | null) => void;
   onSetHardcoreMode: (id: string, enabled: boolean) => void;
+  /** Opens the full `GameAchievements` page for this game — see `App.tsx`. */
+  onOpenAchievements: (game: Game) => void;
   registerBackHandler: (handler: (() => void) | null) => void;
   registerNavScope: (el: HTMLElement | null) => void;
   /** Whether this exact game currently has a tracked play session running
@@ -58,95 +53,13 @@ interface GameDetailProps {
 
 // A game with a full achievement set can easily be 30-50 entries —
 // collapsed to this many by default so the page isn't dominated by it.
+// The full `GameAchievements` page (linked from this panel) has no cap.
 const ACHIEVEMENTS_PREVIEW_COUNT = 6;
-
-/** RetroAchievements and Steam achievements render identically except for
- * points/hardcore, which only RetroAchievements has — this is what both
- * `RaGameAchievements` and `SteamGameAchievements` get adapted into so the
- * rendering below doesn't need to care which source it came from. */
-interface DisplayAchievements {
-  source: "retroachievements" | "steam";
-  earnedCount: number;
-  totalCount: number;
-  pointsEarned: number | null;
-  pointsTotal: number | null;
-  achievements: DisplayAchievement[];
-}
-
-interface DisplayAchievement {
-  id: string;
-  title: string;
-  description: string;
-  iconUrl: string;
-  unlocked: boolean;
-  unlockedHardcore: boolean;
-  points: number | null;
-  unlockedAt: number | null;
-}
-
-function toAchievementDetails(
-  achievement: DisplayAchievement,
-  source: DisplayAchievements["source"],
-  gameName: string,
-): AchievementDetails {
-  return {
-    ...achievement,
-    source: source === "steam" ? "Steam" : "RetroAchievements",
-    gameName,
-  };
-}
-
-function fromRa(data: RaGameAchievements): DisplayAchievements {
-  return {
-    source: "retroachievements",
-    earnedCount: data.earnedCount,
-    totalCount: data.totalCount,
-    pointsEarned: data.pointsEarned,
-    pointsTotal: data.pointsTotal,
-    achievements: data.achievements.map((achievement) => ({
-      id: String(achievement.id),
-      title: achievement.title,
-      description: achievement.description,
-      iconUrl: achievement.badgeUrl,
-      unlocked: achievement.unlocked,
-      unlockedHardcore: achievement.unlockedHardcore,
-      points: achievement.points,
-      unlockedAt: achievement.unlockedAt,
-    })),
-  };
-}
-
-function fromSteam(data: SteamGameAchievements): DisplayAchievements {
-  return {
-    source: "steam",
-    earnedCount: data.earnedCount,
-    totalCount: data.totalCount,
-    pointsEarned: null,
-    pointsTotal: null,
-    achievements: data.achievements.map((achievement) => ({
-      id: achievement.id,
-      title: achievement.title,
-      description: achievement.description,
-      iconUrl: achievement.iconUrl,
-      unlocked: achievement.unlocked,
-      unlockedHardcore: false,
-      points: null,
-      unlockedAt: achievement.unlockedAt,
-    })),
-  };
-}
 
 function activeFeatures(game: Game): string[] {
   const features: string[] = [];
   if (game.nativeEmulator) features.push(`Native: ${game.nativeEmulator}`);
   return features;
-}
-
-function supportsHardcoreMode(game: Game): boolean {
-  return (
-    game.source === "retro" &&
-    (game.nativeEmulator?.startsWith("RetroArch ·") === true || game.nativeEmulator === "PCSX2")
-  );
 }
 
 function releaseYear(metadata: GameMetadata): string | null {
@@ -221,6 +134,7 @@ export function GameDetail({
   onToggleFavorite,
   onSetReaction,
   onSetHardcoreMode,
+  onOpenAchievements,
   registerBackHandler,
   registerNavScope,
   isPlaying,
@@ -234,14 +148,9 @@ export function GameDetail({
   const [localScreenshotPaths, setLocalScreenshotPaths] = useState(game.localScreenshotPaths);
   const [nexusMods, setNexusMods] = useState<NexusMod[] | null>(null);
   const [nexusLoading, setNexusLoading] = useState(true);
-  const [achievements, setAchievements] = useState<DisplayAchievements | null>(null);
-  const [achievementsLoading, setAchievementsLoading] = useState(false);
-  const [achievementsRefreshing, setAchievementsRefreshing] = useState(false);
   const [achievementsExpanded, setAchievementsExpanded] = useState(false);
   const [selectedAchievement, setSelectedAchievement] = useState<DisplayAchievement | null>(null);
-  const [achievementsError, setAchievementsError] = useState<string | null>(null);
   const metadataRequestRef = useRef(0);
-  const achievementsRequestRef = useRef(0);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [lightboxGallery, setLightboxGallery] = useState<string[]>([]);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -252,6 +161,13 @@ export function GameDetail({
   const lightboxRef = useRef<HTMLDivElement>(null);
   const lightboxTriggerRef = useRef<HTMLButtonElement>(null);
   const { account: wervikAccount } = useWervikAccount();
+  const {
+    achievements,
+    loading: achievementsLoading,
+    refreshing: achievementsRefreshing,
+    error: achievementsError,
+    refresh: refreshAchievements,
+  } = useGameAchievements(game, justFinishedGameId);
   const gameHero = useArtwork(game.heroPath ?? game.coverPath);
   const gameCover = useArtwork(game.coverPath);
   const metadataHero = useArtwork(metadata?.heroPath ?? metadata?.coverPath);
@@ -393,59 +309,13 @@ export function GameDetail({
     };
   }, [game.id, game.name]);
 
-  const loadAchievements = useCallback(
-    (force: boolean) => {
-      if (game.source !== "retro" && game.source !== "steam") {
-        setAchievements(null);
-        return;
-      }
-      // A monotonic token, not a per-call `cancelled` closure, because this
-      // is now called from three places (mount/game-change, the "just
-      // finished playing" effect, and the manual refresh button) — a stale
-      // response from any of them is discarded the same way.
-      const requestId = ++achievementsRequestRef.current;
-      if (force) setAchievementsRefreshing(true);
-      else setAchievementsLoading(true);
-      setAchievementsError(null);
-      const request =
-        game.source === "retro"
-          ? getRetroAchievements(game.id, force).then((value) => (value ? fromRa(value) : null))
-          : getSteamAchievements(game.id, force).then((value) => (value ? fromSteam(value) : null));
-      request
-        .then((value) => {
-          if (achievementsRequestRef.current === requestId) setAchievements(value);
-        })
-        .catch((err) => {
-          if (achievementsRequestRef.current === requestId) {
-            setAchievements(null);
-            setAchievementsError(typeof err === "string" ? err : "Couldn't load achievements.");
-          }
-        })
-        .finally(() => {
-          if (achievementsRequestRef.current === requestId) {
-            setAchievementsLoading(false);
-            setAchievementsRefreshing(false);
-          }
-        });
-    },
-    [game.id, game.source],
-  );
-
+  // Collapses the preview panel back down and drops any open achievement
+  // detail dialog whenever the game itself changes — `useGameAchievements`
+  // (above) owns re-fetching the actual data on the same trigger.
   useEffect(() => {
-    setAchievements(null);
     setAchievementsExpanded(false);
     setSelectedAchievement(null);
-    loadAchievements(false);
-  }, [loadAchievements]);
-
-  // Force a fresh read right after a play session on this exact game ends
-  // — most relevant for games launched through a native RetroArch core,
-  // whose real achievements engine may have unlocked something meanwhile.
-  useEffect(() => {
-    if (justFinishedGameId && justFinishedGameId === game.id) {
-      loadAchievements(true);
-    }
-  }, [justFinishedGameId, game.id, loadAchievements]);
+  }, [game.id]);
 
   const playtime = formatPlaytime(game.playtimeMinutes);
   const lastPlayed = formatLastPlayed(game.lastPlayed);
@@ -804,6 +674,14 @@ export function GameDetail({
                       {achievementsExpanded ? "Collapse" : "View all"}
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className={styles.achievementsToggle}
+                    data-nav-item
+                    onClick={() => onOpenAchievements(game)}
+                  >
+                    Full page →
+                  </button>
                 </div>
                 <span className={styles.achievementsProgress}>
                     {achievements.earnedCount}/{achievements.totalCount}
@@ -829,7 +707,7 @@ export function GameDetail({
                     type="button"
                     className={styles.achievementsRefreshButton}
                     data-nav-item
-                    onClick={() => loadAchievements(true)}
+                    onClick={refreshAchievements}
                     disabled={achievementsRefreshing}
                     aria-label="Refresh achievements"
                     title="Refresh achievements"
