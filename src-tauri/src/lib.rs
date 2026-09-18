@@ -192,6 +192,7 @@ pub fn run() {
                 cloud_sync_library_requested,
                 cloud_sync_achievements_requested,
                 wervik_sync_generation,
+                active_save_syncs: std::collections::HashSet::new(),
             };
             state.seed_provider_playtime();
             state.dedupe_rom_games_by_metadata();
@@ -300,6 +301,8 @@ pub fn run() {
             commands::rescan_retro_library,
             commands::get_rom_scan_status,
             commands::launch_retro_game,
+            commands::get_game_sync_status,
+            commands::sync_game_saves,
             commands::get_platform_status,
             commands::set_default_emulator,
             commands::set_graphics_preset,

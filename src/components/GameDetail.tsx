@@ -17,6 +17,7 @@ import {
   refreshGameMetadata,
 } from "../api/tauri";
 import { useArtwork } from "../hooks/useArtwork";
+import { useWervikAccount } from "../hooks/useWervikAccount";
 import type {
   Game,
   GameMetadata,
@@ -30,6 +31,7 @@ import { ActiveFeaturesRow } from "./ActiveFeaturesRow";
 import { AchievementDetailsModal, type AchievementDetails } from "./AchievementDetailsModal";
 import { BiosControl } from "./BiosControl";
 import { OverflowMenu } from "./OverflowMenu";
+import { SaveSyncStatus } from "./SaveSyncStatus";
 import { SourceBadge } from "./SourceBadge";
 import { Spinner } from "./Spinner";
 import { Switch } from "./Switch";
@@ -249,6 +251,7 @@ export function GameDetail({
   const playButtonRef = useRef<HTMLButtonElement>(null);
   const lightboxRef = useRef<HTMLDivElement>(null);
   const lightboxTriggerRef = useRef<HTMLButtonElement>(null);
+  const { account: wervikAccount } = useWervikAccount();
   const gameHero = useArtwork(game.heroPath ?? game.coverPath);
   const gameCover = useArtwork(game.coverPath);
   const metadataHero = useArtwork(metadata?.heroPath ?? metadata?.coverPath);
@@ -655,6 +658,7 @@ export function GameDetail({
             className={styles.sourceBadge}
           />
           {!game.isInstalled && <div className={styles.notInstalled}>Not installed</div>}
+          {game.source === "retro" && wervikAccount && <SaveSyncStatus gameId={game.id} />}
           {/* Prefers the freshly-fetched IGDB name over `game.name` (from
               the library snapshot) — otherwise a corrected match (e.g.
               after retagging a ROM folder's platform, or hitting "refresh

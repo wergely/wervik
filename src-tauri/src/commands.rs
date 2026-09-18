@@ -37,7 +37,8 @@ use crate::steam::library::{self, Game};
 use crate::steam::owned::{self, OwnedGame, SteamOwnedGamesCache};
 use crate::steam::SteamCredentials;
 use crate::storage::{
-    MetadataProvider, PendingWervikConnect, RomDirectoryConfig, Settings, Store, WervikAccount,
+    MetadataProvider, PendingWervikConnect, RomDirectoryConfig, SaveSyncRecord, Settings, Store,
+    WervikAccount,
 };
 use crate::window;
 use crate::xbox::discovery::XboxGame;
@@ -108,6 +109,11 @@ pub struct AppState {
     pub cloud_sync_achievements_requested: Arc<AtomicBool>,
     /// Invalidates cloud uploads when the connected account changes.
     pub wervik_sync_generation: Arc<AtomicUsize>,
+    /// Unified ROM game ids with a RetroArch save-sync attempt in flight
+    /// right now (launch restore, post-exit upload, or a manual "Sync now"),
+    /// so `get_game_sync_status` can report "syncing" for a page that loads
+    /// mid-attempt instead of only after the fact.
+    pub active_save_syncs: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -2370,11 +2376,13 @@ pub fn launch_retro_game(
 
         if is_retroarch {
             if let Some(token) = account_token {
-                if let Err(error) =
-                    saves::restore_game(&app_data_dir, &token, &id, &platform_key, &native_rom_path)
-                {
+                begin_save_sync(&app_handle, &id);
+                let result =
+                    saves::restore_game(&app_data_dir, &token, &id, &platform_key, &native_rom_path);
+                if let Err(error) = &result {
                     eprintln!("RetroArch save restore failed for {id}: {error}");
                 }
+                finish_save_sync(&app_handle, &id, &result);
             }
         }
 
@@ -2403,15 +2411,18 @@ pub fn launch_retro_game(
             let mut child = child;
             let _ = child.wait();
             if is_retroarch {
-                if let Err(error) = saves::sync_game_from_runtime(
+                begin_save_sync(&app_handle, &id);
+                let result = saves::sync_game_from_runtime(
                     &app_handle,
                     &app_data_dir,
                     &id,
                     &platform_key,
                     &native_rom_path,
-                ) {
+                );
+                if let Err(error) = &result {
                     eprintln!("RetroArch save sync failed for {id}: {error}");
                 }
+                finish_save_sync(&app_handle, &id, &result);
             }
             if let Some(dir) = cleanup_dir {
                 let _ = std::fs::remove_dir_all(dir);
@@ -2426,6 +2437,173 @@ pub fn launch_retro_game(
         rom.platform.display_name(),
         rom.platform.display_name()
     ))
+}
+
+/// Wire status of a game's RetroArch save sync (see `retro::saves`).
+/// `NotApplicable` covers every reason sync doesn't apply here: no Wervik
+/// account connected, the ROM isn't in the library, or its platform isn't
+/// currently launching through a RetroArch core.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum SaveSyncStatus {
+    NotApplicable,
+    Idle,
+    Syncing,
+    Synced { at: i64 },
+    Error { at: i64, message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveSyncEvent {
+    game_id: String,
+    status: SaveSyncStatus,
+}
+
+fn emit_save_sync_status(app_handle: &tauri::AppHandle, game_id: &str, status: SaveSyncStatus) {
+    let _ = app_handle.emit(
+        "save-sync-updated",
+        SaveSyncEvent {
+            game_id: game_id.to_string(),
+            status,
+        },
+    );
+}
+
+/// Resolves a save-sync target only when it's actually eligible: the ROM is
+/// in the library and its platform currently launches through a RetroArch
+/// core (the only emulators `retro::saves` supports).
+fn save_sync_target(state: &AppState, game_id: &str) -> Option<(RomGame, String)> {
+    let rom = state.rom_games.iter().find(|g| g.id == game_id)?.clone();
+    let emulator =
+        resolve_effective_native_emulator(&state.app_data_dir, rom.platform, &state.store)?;
+    if !emulator.id.starts_with("retroarch-") {
+        return None;
+    }
+    let platform_key = rom.platform.key().to_string();
+    Some((rom, platform_key))
+}
+
+fn stored_save_sync_status(store: &Store, game_id: &str) -> SaveSyncStatus {
+    match store.retro_save_sync(game_id) {
+        Some(record) if record.ok => SaveSyncStatus::Synced { at: record.at },
+        Some(record) => SaveSyncStatus::Error {
+            at: record.at,
+            message: record
+                .message
+                .unwrap_or_else(|| "Save sync failed.".to_string()),
+        },
+        None => SaveSyncStatus::Idle,
+    }
+}
+
+/// Marks `game_id` no longer syncing, persists the outcome, and notifies the
+/// frontend. Shared by the automatic launch/exit hooks and `sync_game_saves`.
+fn finish_save_sync(
+    app_handle: &tauri::AppHandle,
+    game_id: &str,
+    result: &Result<usize, String>,
+) -> SaveSyncStatus {
+    let at = now_unix();
+    let (record, status) = match result {
+        Ok(_) => (
+            SaveSyncRecord {
+                at,
+                ok: true,
+                message: None,
+            },
+            SaveSyncStatus::Synced { at },
+        ),
+        Err(message) => (
+            SaveSyncRecord {
+                at,
+                ok: false,
+                message: Some(message.clone()),
+            },
+            SaveSyncStatus::Error {
+                at,
+                message: message.clone(),
+            },
+        ),
+    };
+    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.active_save_syncs.remove(game_id);
+        state.store.set_retro_save_sync(game_id, record);
+    }
+    emit_save_sync_status(app_handle, game_id, status.clone());
+    status
+}
+
+fn begin_save_sync(app_handle: &tauri::AppHandle, game_id: &str) {
+    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_save_syncs
+            .insert(game_id.to_string());
+    }
+    emit_save_sync_status(app_handle, game_id, SaveSyncStatus::Syncing);
+}
+
+/// Current save-sync status for one game — fetched once on the game page,
+/// then followed live via the `save-sync-updated` event.
+#[tauri::command(async)]
+pub fn get_game_sync_status(state: State<AppStateHandle>, game_id: String) -> SaveSyncStatus {
+    let state = state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.store.wervik_account().is_none() || save_sync_target(&state, &game_id).is_none() {
+        return SaveSyncStatus::NotApplicable;
+    }
+    if state.active_save_syncs.contains(&game_id) {
+        return SaveSyncStatus::Syncing;
+    }
+    stored_save_sync_status(&state.store, &game_id)
+}
+
+/// Manually reconciles this game's RetroArch saves with Wervik — pulls newer
+/// remote saves down, then pushes local changes up — without requiring the
+/// game to be running, unlike the automatic launch/exit hooks.
+#[tauri::command(async)]
+pub fn sync_game_saves(state_handle: State<AppStateHandle>, game_id: String) -> SaveSyncStatus {
+    let (app_handle, app_data_dir, token, rom_path, platform_key) = {
+        let state = state_handle.lock().unwrap_or_else(|e| e.into_inner());
+        let token = state
+            .store
+            .wervik_account()
+            .map(|account| account.access_token)
+            .filter(|token| !token.trim().is_empty());
+        match (token, save_sync_target(&state, &game_id)) {
+            (Some(token), Some((rom, platform_key))) => (
+                state.app_handle.clone(),
+                state.app_data_dir.clone(),
+                token,
+                PathBuf::from(rom.rom_path),
+                platform_key,
+            ),
+            _ => return SaveSyncStatus::NotApplicable,
+        }
+    };
+
+    begin_save_sync(&app_handle, &game_id);
+    let restored = saves::restore_game(&app_data_dir, &token, &game_id, &platform_key, &rom_path);
+    if let Err(error) = &restored {
+        eprintln!("RetroArch save restore failed for {game_id}: {error}");
+    }
+    let uploaded = saves::sync_game_from_runtime(
+        &app_handle,
+        &app_data_dir,
+        &game_id,
+        &platform_key,
+        &rom_path,
+    );
+    if let Err(error) = &uploaded {
+        eprintln!("RetroArch save sync failed for {game_id}: {error}");
+    }
+    let combined = match (restored, uploaded) {
+        (Ok(restored), Ok(uploaded)) => Ok(restored + uploaded),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    };
+    finish_save_sync(&app_handle, &game_id, &combined)
 }
 
 /// Opens the folder containing a ROM in the system file manager — the

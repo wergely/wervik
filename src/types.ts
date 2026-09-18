@@ -249,6 +249,16 @@ export interface WervikAccount {
 
 export type SortMode = "recent" | "alphabetical" | "playtime" | "score" | "completion";
 
+/** RetroArch save-sync status for one game — see `commands::SaveSyncStatus`
+ * on the Rust side. `notApplicable` covers no Wervik account, the ROM not
+ * being found, or its platform not launching through a RetroArch core. */
+export type SaveSyncStatus =
+  | { state: "notApplicable" }
+  | { state: "idle" }
+  | { state: "syncing" }
+  | { state: "synced"; at: number }
+  | { state: "error"; at: number; message: string };
+
 export interface GameMetadataSummary {
   igdbId: number;
   firstReleaseDate: number | null;

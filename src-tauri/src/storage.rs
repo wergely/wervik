@@ -25,6 +25,18 @@ impl Default for MetadataProvider {
     }
 }
 
+/// Outcome of the most recent RetroArch save-sync attempt for one game (see
+/// `retro::saves`). Kept across restarts so the game page can still show
+/// "last synced" without waiting for a new attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveSyncRecord {
+    pub at: i64,
+    pub ok: bool,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WervikAccount {
@@ -365,6 +377,10 @@ pub struct StoredState {
     /// Wervik never applies a resolution bump the user didn't ask for.
     #[serde(default)]
     pub platform_graphics_preset: HashMap<String, String>,
+    /// Unified ROM game id -> outcome of its most recent RetroArch save-sync
+    /// attempt (see `retro::saves`). Absent means never attempted.
+    #[serde(default)]
+    pub retro_save_sync: HashMap<String, SaveSyncRecord>,
 }
 
 pub struct Store {
@@ -541,6 +557,17 @@ impl Store {
 
     pub fn installation_id(&self) -> String {
         self.state.installation_id.clone()
+    }
+
+    pub fn retro_save_sync(&self, game_id: &str) -> Option<SaveSyncRecord> {
+        self.state.retro_save_sync.get(game_id).cloned()
+    }
+
+    pub fn set_retro_save_sync(&mut self, game_id: &str, record: SaveSyncRecord) {
+        self.state
+            .retro_save_sync
+            .insert(game_id.to_string(), record);
+        self.persist();
     }
 
     pub fn wervik_account(&self) -> Option<WervikAccount> {

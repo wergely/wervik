@@ -14,6 +14,7 @@ import type {
   RaProfileSummary,
   RetroLaunch,
   RomDirectoryConfig,
+  SaveSyncStatus,
   Settings,
   SteamGameAchievements,
   WervikAccount,
@@ -225,6 +226,16 @@ export function rescanRetroLibrary(): Promise<LibrarySnapshot> {
  * instead of the default (see `Game.variants`); omit for the default. */
 export function launchRetroGame(id: string, variantId?: string | null): Promise<RetroLaunch> {
   return invoke("launch_retro_game", { id, variantId: variantId ?? null });
+}
+
+export function getGameSyncStatus(gameId: string): Promise<SaveSyncStatus> {
+  return invoke("get_game_sync_status", { gameId });
+}
+
+/** Pulls newer remote saves down, then pushes local changes up, without
+ * requiring the game to be running. */
+export function syncGameSaves(gameId: string): Promise<SaveSyncStatus> {
+  return invoke("sync_game_saves", { gameId });
 }
 
 export function getBiosPath(platform: string): Promise<string | null> {
