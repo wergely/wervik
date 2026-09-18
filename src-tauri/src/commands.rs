@@ -685,17 +685,17 @@ pub fn cancel_metadata_fetch(state: State<AppStateHandle>) -> Result<(), String>
     Ok(())
 }
 
-/// Wipes the IGDB metadata cache (entries, misses, and downloaded artwork)
-/// and re-runs the background fetch for every game, from Settings' "Refresh
+/// Re-runs the background fetch for every game, from Settings' "Refresh
 /// metadata" button. Unlike a normal rescan, this is the only way to correct
 /// a game that already has a *wrong* cached match — normal scans keep the
-/// existing result regardless of its age.
+/// existing result regardless of its age. Each game's own cache entry and
+/// artwork are only cleared right before that game is re-fetched (see
+/// `process_metadata_game`), not all at once here, so the rest of the
+/// library keeps showing its current metadata while the sweep works through
+/// it instead of the whole UI going blank immediately.
 #[tauri::command(async)]
 pub fn refresh_all_metadata(state: State<AppStateHandle>) -> Result<(), String> {
     let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-    state.metadata_cache.clear()?;
-    metadata::clear_artwork(&state.app_data_dir)?;
-    state.rebuild_known_image_paths();
     state.start_metadata_fetch_with_force(true);
     Ok(())
 }

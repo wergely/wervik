@@ -962,7 +962,7 @@ pub fn spawn_fetch(
                     .expect("validated IGDB credentials");
                 let access_token = access_token.as_deref().expect("validated IGDB access token");
                 for game in &pending {
-                    let step = process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, || {
+                    let step = process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, force, || {
                         fetch_game_with_token(&agent, client_id, access_token, &app_data_dir, &game.id, &game.name, game.platform)
                     });
                     if step == GameStep::Cancelled {
@@ -987,7 +987,7 @@ pub fn spawn_fetch(
                     std::thread::scope(|scope| {
                         for game in chunk {
                             scope.spawn(|| {
-                                process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, || {
+                                process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, force, || {
                                     let agent = new_agent();
                                     fetch_game_from_wervik(&agent, wervik_access_token, &app_data_dir, &game.id, &game.name, game.platform, force)
                                 });
@@ -1016,6 +1016,7 @@ enum GameStep {
 /// own request guard and generation checks, so this is safe to call from
 /// multiple threads for different games at once.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn process_metadata_game(
     app_handle: &AppHandle,
     app_data_dir: &Path,
@@ -1025,6 +1026,13 @@ fn process_metadata_game(
     progress: &MetadataProgressState,
     total: usize,
     updated_any: &AtomicBool,
+    // Whether this is a forced re-fetch of an already-processed game (a
+    // per-game or whole-library "Refresh metadata"). The old cache entry and
+    // artwork are only cleared right here, one game at a time, right before
+    // its own re-fetch — not upfront for the whole sweep — so the rest of
+    // the library keeps showing its current metadata until each game's own
+    // replacement actually arrives instead of the UI going blank at once.
+    force: bool,
     fetch: impl FnOnce() -> Result<Option<GameMetadata>, String>,
 ) -> GameStep {
     if generation.load(Ordering::SeqCst) != generation_id {
@@ -1055,6 +1063,18 @@ fn process_metadata_game(
         let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
         return GameStep::Done;
     };
+
+    if force {
+        // Old artwork must go before the new fetch, not after: image files
+        // are keyed by a fixed per-game name, and downloads are skipped
+        // whenever that name already exists on disk (see `download_image`),
+        // so a stale file would otherwise survive a refresh untouched.
+        if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = state.metadata_cache.remove(&game.id);
+        }
+        let _ = clear_artwork_for(app_data_dir, &game.id);
+    }
 
     let result = fetch();
     if generation.load(Ordering::SeqCst) != generation_id {
