@@ -234,6 +234,9 @@ export interface Settings {
    * account. */
   steamApiKey: string;
   steamId64Override: string;
+  /** Whether the first-run Welcome wizard has been completed — see
+   * `components/Welcome.tsx`. */
+  onboardingCompleted: boolean;
 }
 
 export type MetadataProvider = "igdb" | "wervik";

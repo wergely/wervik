@@ -17,6 +17,7 @@ import { Home } from "./components/Home";
 import { PlatformDetail } from "./components/PlatformDetail";
 import { PlatformsView } from "./components/PlatformsView";
 import { Settings } from "./components/Settings";
+import { Welcome } from "./components/Welcome";
 import { useChiptunePlayer } from "./hooks/useChiptunePlayer";
 import { useLibrary } from "./hooks/useLibrary";
 import { useSettings } from "./hooks/useSettings";
@@ -45,6 +46,10 @@ export default function App() {
   // Where "Back" from the full achievements page should land — it's reachable
   // both from the Achievements overview and from a game's own detail page.
   const [achievementsOrigin, setAchievementsOrigin] = useState<"achievements" | "detail">("achievements");
+  // Manually reopening the Welcome tour from Settings shouldn't flip the
+  // persisted `onboardingCompleted` flag back to false just to show it once
+  // more — this is a separate, session-only override.
+  const [welcomeForced, setWelcomeForced] = useState(false);
   // Lets a nested overlay (e.g. the Game Setup drawer) intercept Escape/
   // gamepad B to close itself instead of the current view navigating back
   // to Home.
@@ -249,6 +254,20 @@ export default function App() {
     );
   }
 
+  if (settings && (!settings.onboardingCompleted || welcomeForced)) {
+    return (
+      <div style={{ zoom: settings.uiScale, height: "100%" }}>
+        <Welcome
+          onLibraryChange={applySnapshot}
+          onDone={() => {
+            setWelcomeForced(false);
+            if (!settings.onboardingCompleted) updateSettings({ onboardingCompleted: true });
+          }}
+        />
+      </div>
+    );
+  }
+
   const headerView: HeaderView =
     view === "settings"
       ? "settings"
@@ -282,6 +301,7 @@ export default function App() {
             onUpdateSettings={updateSettings}
             onRescan={rescan}
             onLibraryChange={applySnapshot}
+            onReopenWelcome={() => setWelcomeForced(true)}
           />
         ) : view === "detail" && selectedGame ? (
           <GameDetail

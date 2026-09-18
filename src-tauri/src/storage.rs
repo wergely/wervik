@@ -172,6 +172,11 @@ pub struct Settings {
     pub steam_api_key: String,
     #[serde(default)]
     pub steam_id64_override: String,
+    /// Whether the first-run Welcome wizard has been completed. `false` for
+    /// both a brand-new install and any settings file saved before this
+    /// field existed, so upgrading users see it once too.
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 fn default_ui_scale() -> f32 {
@@ -252,6 +257,7 @@ impl Default for Settings {
             ra_password: String::new(),
             steam_api_key: String::new(),
             steam_id64_override: String::new(),
+            onboarding_completed: false,
         }
     }
 }
