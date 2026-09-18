@@ -22,6 +22,9 @@ use crate::storage::MetadataProvider;
 const MAX_SCREENSHOTS: usize = 4;
 const IGDB_REQUEST_DELAY: Duration = Duration::from_millis(300);
 const WERVIK_WEB_URL: &str = "https://wervik.wergely.com";
+// The proxy enforces its own IGDB rate limit server-side, so the client can
+// run several lookups concurrently instead of one at a time.
+const WERVIK_FETCH_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -603,6 +606,23 @@ pub fn fetch_game(
     }
 }
 
+// The Wervik proxy fronts one shared IGDB credential for every user, so a
+// burst of concurrent lookups (this app's own batch sync, or others running
+// at the same time) can trip its server-side rate limit. Retry a bounded
+// number of times with backoff instead of failing the game outright.
+const WERVIK_FETCH_MAX_ATTEMPTS: u32 = 4;
+
+fn is_retryable_wervik_status(status: u16) -> bool {
+    matches!(status, 429 | 500 | 502 | 503 | 504)
+}
+
+fn wervik_retry_delay(attempt: u32, retry_after: Option<u64>) -> Duration {
+    if let Some(seconds) = retry_after {
+        return Duration::from_secs(seconds.min(30));
+    }
+    Duration::from_millis(500 * 2u64.pow(attempt.saturating_sub(1)).min(8))
+}
+
 fn fetch_game_from_wervik(
     agent: &Agent,
     access_token: &str,
@@ -623,11 +643,43 @@ fn fetch_game_from_wervik(
         platform_key: platform.map(Platform::key),
         force,
     };
-    let mut response = agent
-        .post(url.as_str())
-        .header("Authorization", &format!("Bearer {access_token}"))
-        .send_json(&request)
-        .map_err(|error| format!("Wervik metadata lookup failed: {error}"))?;
+
+    let mut response = None;
+    for attempt in 1..=WERVIK_FETCH_MAX_ATTEMPTS {
+        let outcome = agent
+            .post(url.as_str())
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &format!("Bearer {access_token}"))
+            .send_json(&request);
+        let candidate = match outcome {
+            Ok(candidate) => candidate,
+            Err(error) if attempt < WERVIK_FETCH_MAX_ATTEMPTS => {
+                eprintln!("Wervik metadata lookup attempt {attempt} failed, retrying: {error}");
+                std::thread::sleep(wervik_retry_delay(attempt, None));
+                continue;
+            }
+            Err(error) => return Err(format!("Wervik metadata lookup failed: {error}")),
+        };
+        let status = candidate.status().as_u16();
+        if (200..300).contains(&status) {
+            response = Some(candidate);
+            break;
+        }
+        if attempt < WERVIK_FETCH_MAX_ATTEMPTS && is_retryable_wervik_status(status) {
+            let retry_after = candidate
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            std::thread::sleep(wervik_retry_delay(attempt, retry_after));
+            continue;
+        }
+        return Err(format!("Wervik metadata lookup failed: http status {status}"));
+    }
+    let mut response = response.expect("loop returns before exhausting attempts on success");
+
     let response = response
         .body_mut()
         .read_json::<WervikMetadataResponse>()
@@ -901,131 +953,163 @@ pub fn spawn_fetch(
         progress.done.store(0, Ordering::SeqCst);
         progress.total.store(total, Ordering::SeqCst);
         let _ = app_handle.emit("metadata-progress", MetadataProgress { done: 0, total });
-        let mut updated_any = false;
+        let updated_any = AtomicBool::new(false);
 
-        for game in pending {
-            if generation.load(Ordering::SeqCst) != generation_id {
-                break;
-            }
-
-            let _request_guard = loop {
-                if let Some(request_guard) =
-                    crate::commands::start_metadata_request(&app_handle, &game.id, generation_id)
-                {
-                    break Some(request_guard);
-                }
-                // A request from this same generation already owns the game.
-                // Its result will be the authoritative one, so this sweep can
-                // leave it alone. A request from an older generation must
-                // finish first, otherwise its artwork could be written after
-                // a refresh cleared the files and be mistaken for the new
-                // result.
-                if crate::commands::metadata_request_generation(&app_handle, &game.id)
-                    == Some(generation_id)
-                {
-                    break None;
-                }
-                let (_, pending) =
-                    crate::commands::wait_for_metadata_request(&app_handle, &game.id);
-                if generation.load(Ordering::SeqCst) != generation_id || pending {
-                    break None;
-                }
-            };
-            let Some(_request_guard) = _request_guard else {
-                let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
-                let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
-                continue;
-            };
-
-            let result = match provider {
-                MetadataProvider::Igdb => {
-                    let (client_id, _) = igdb_credentials
-                        .as_ref()
-                        .expect("validated IGDB credentials");
-                    fetch_game_with_token(
-                        &agent,
-                        client_id,
-                        access_token
-                            .as_deref()
-                            .expect("validated IGDB access token"),
-                        &app_data_dir,
-                        &game.id,
-                        &game.name,
-                        game.platform,
-                    )
-                }
-                MetadataProvider::Wervik => fetch_game_from_wervik(
-                    &agent,
-                    wervik_access_token
-                        .as_deref()
-                        .expect("validated Wervik access token"),
-                    &app_data_dir,
-                    &game.id,
-                    &game.name,
-                    game.platform,
-                    force,
-                ),
-            };
-            if generation.load(Ordering::SeqCst) != generation_id {
-                break;
-            }
-            match result {
-                Ok(Some(metadata)) => {
-                    let mut updated = false;
-                    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
-                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                        // The generation can change while this worker waits
-                        // for the state lock (for example, when the user
-                        // starts a per-game refresh). Check again while the
-                        // lock is held so an older result cannot overwrite
-                        // the newer manual result.
-                        if generation.load(Ordering::SeqCst) != generation_id {
-                            break;
-                        }
-                        let image_paths = [metadata.cover_path.clone(), metadata.hero_path.clone()]
-                            .into_iter()
-                            .flatten()
-                            .chain(metadata.screenshot_paths.iter().cloned())
-                            .collect::<Vec<_>>();
-                        if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
-                            eprintln!("Could not save metadata for {}: {error}", game.name);
-                        } else {
-                            state.known_image_paths.extend(image_paths);
-                            state.dedupe_rom_games_by_metadata();
-                            let _ = app_handle.emit("metadata-updated", &game.id);
-                            updated = true;
-                        }
+        match provider {
+            MetadataProvider::Igdb => {
+                let (client_id, _) = igdb_credentials
+                    .as_ref()
+                    .expect("validated IGDB credentials");
+                let access_token = access_token.as_deref().expect("validated IGDB access token");
+                for game in &pending {
+                    let step = process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, || {
+                        fetch_game_with_token(&agent, client_id, access_token, &app_data_dir, &game.id, &game.name, game.platform)
+                    });
+                    if step == GameStep::Cancelled {
+                        break;
                     }
-                    if updated {
-                        updated_any = true;
-                    }
+                    // A single client-held IGDB key must self-throttle to stay
+                    // under IGDB's public rate limit.
+                    std::thread::sleep(IGDB_REQUEST_DELAY);
                 }
-                Ok(None) => {
-                    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
-                        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-                        if generation.load(Ordering::SeqCst) != generation_id {
-                            break;
-                        }
-                        if let Err(error) = state.metadata_cache.mark_miss(game.id.clone()) {
-                            eprintln!("Could not save metadata miss for {}: {error}", game.name);
-                        }
+            }
+            MetadataProvider::Wervik => {
+                let wervik_access_token = wervik_access_token
+                    .as_deref()
+                    .expect("validated Wervik access token");
+                // The Wervik proxy rate-limits and retries on the server
+                // side, so several games can be looked up at once instead of
+                // one at a time with a fixed client-side delay.
+                for chunk in pending.chunks(WERVIK_FETCH_CONCURRENCY) {
+                    if generation.load(Ordering::SeqCst) != generation_id {
+                        break;
                     }
+                    std::thread::scope(|scope| {
+                        for game in chunk {
+                            scope.spawn(|| {
+                                process_metadata_game(&app_handle, &app_data_dir, game, &generation, generation_id, &progress, total, &updated_any, || {
+                                    let agent = new_agent();
+                                    fetch_game_from_wervik(&agent, wervik_access_token, &app_data_dir, &game.id, &game.name, game.platform, force)
+                                });
+                            });
+                        }
+                    });
                 }
-                Err(error) => eprintln!("IGDB metadata fetch failed for {}: {error}", game.name),
             }
-            let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
-            let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
-            if generation.load(Ordering::SeqCst) != generation_id {
-                break;
-            }
-            std::thread::sleep(IGDB_REQUEST_DELAY);
         }
         let completed = generation.load(Ordering::SeqCst) == generation_id;
         finish_fetch(&running, &generation, generation_id);
-        if completed && updated_any {
+        if completed && updated_any.load(Ordering::SeqCst) {
             crate::commands::schedule_wervik_library_sync(&app_handle);
         }
     });
+}
+
+#[derive(PartialEq, Eq)]
+enum GameStep {
+    Cancelled,
+    Done,
+}
+
+/// Runs one game through `fetch` and records the outcome. Shared by the
+/// sequential IGDB sweep and the concurrent Wervik batches: each game has its
+/// own request guard and generation checks, so this is safe to call from
+/// multiple threads for different games at once.
+#[allow(clippy::too_many_arguments)]
+fn process_metadata_game(
+    app_handle: &AppHandle,
+    app_data_dir: &Path,
+    game: &MetadataQuery,
+    generation: &AtomicUsize,
+    generation_id: usize,
+    progress: &MetadataProgressState,
+    total: usize,
+    updated_any: &AtomicBool,
+    fetch: impl FnOnce() -> Result<Option<GameMetadata>, String>,
+) -> GameStep {
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return GameStep::Cancelled;
+    }
+
+    let _request_guard = loop {
+        if let Some(request_guard) =
+            crate::commands::start_metadata_request(app_handle, &game.id, generation_id)
+        {
+            break Some(request_guard);
+        }
+        // A request from this same generation already owns the game. Its
+        // result will be the authoritative one, so this sweep can leave it
+        // alone. A request from an older generation must finish first,
+        // otherwise its artwork could be written after a refresh cleared the
+        // files and be mistaken for the new result.
+        if crate::commands::metadata_request_generation(app_handle, &game.id) == Some(generation_id) {
+            break None;
+        }
+        let (_, pending) = crate::commands::wait_for_metadata_request(app_handle, &game.id);
+        if generation.load(Ordering::SeqCst) != generation_id || pending {
+            break None;
+        }
+    };
+    let Some(_request_guard) = _request_guard else {
+        let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
+        let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
+        return GameStep::Done;
+    };
+
+    let result = fetch();
+    if generation.load(Ordering::SeqCst) != generation_id {
+        return GameStep::Cancelled;
+    }
+    match result {
+        Ok(Some(metadata)) => {
+            let mut updated = false;
+            if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                // The generation can change while this worker waits for the
+                // state lock (for example, when the user starts a per-game
+                // refresh). Check again while the lock is held so an older
+                // result cannot overwrite the newer manual result.
+                if generation.load(Ordering::SeqCst) != generation_id {
+                    return GameStep::Cancelled;
+                }
+                let image_paths = [metadata.cover_path.clone(), metadata.hero_path.clone()]
+                    .into_iter()
+                    .flatten()
+                    .chain(metadata.screenshot_paths.iter().cloned())
+                    .collect::<Vec<_>>();
+                if let Err(error) = state.metadata_cache.put(game.id.clone(), metadata) {
+                    eprintln!("Could not save metadata for {}: {error}", game.name);
+                } else {
+                    state.known_image_paths.extend(image_paths);
+                    state.dedupe_rom_games_by_metadata();
+                    let _ = app_handle.emit("metadata-updated", &game.id);
+                    updated = true;
+                }
+            }
+            if updated {
+                updated_any.store(true, Ordering::SeqCst);
+            }
+        }
+        Ok(None) => {
+            if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+                let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+                if generation.load(Ordering::SeqCst) != generation_id {
+                    return GameStep::Cancelled;
+                }
+                if let Err(error) = state.metadata_cache.mark_miss(game.id.clone()) {
+                    eprintln!("Could not save metadata miss for {}: {error}", game.name);
+                }
+            }
+        }
+        Err(error) => eprintln!("Metadata fetch failed for {}: {error}", game.name),
+    }
+    let done = progress.done.fetch_add(1, Ordering::SeqCst) + 1;
+    let _ = app_handle.emit("metadata-progress", MetadataProgress { done, total });
+    if generation.load(Ordering::SeqCst) != generation_id {
+        GameStep::Cancelled
+    } else {
+        GameStep::Done
+    }
 }
 
 fn finish_fetch(running: &AtomicBool, generation: &AtomicUsize, generation_id: usize) {
