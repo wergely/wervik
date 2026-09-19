@@ -720,10 +720,13 @@ fn fetch_game_from_wervik(
                 })
             })
             .collect();
-        let cover_path = cover_handle.join().unwrap();
+        // `.join()` is `Err` only if the download thread itself panicked —
+        // treat that the same as any other failed download instead of
+        // panicking again here.
+        let cover_path = cover_handle.join().unwrap_or(None);
         let screenshot_paths: Vec<String> = screenshot_handles
             .into_iter()
-            .filter_map(|handle| handle.join().unwrap())
+            .filter_map(|handle| handle.join().unwrap_or(None))
             .collect();
         (cover_path, screenshot_paths)
     });

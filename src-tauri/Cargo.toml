@@ -1,6 +1,6 @@
 [package]
 name = "wervik"
-version = "0.1.5"
+version = "0.1.6"
 description = "Wervik — your Steam and retro games, one library."
 authors = ["Wergely"]
 edition = "2021"
@@ -46,9 +46,16 @@ windows-sys = { version = "0.61.2", features = [
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+#
+# Deliberately NOT `panic = "abort"`: background work (the metadata/artwork
+# sweeps, save sync, etc.) all runs on its own threads, and abort mode turns
+# any panic anywhere in the process — even in one of those threads — into an
+# instant, silent crash of the whole app with no error dialog and nothing in
+# a log. Unwind mode (the default) means a bug in one background fetch just
+# kills that one thread; everything else, including the window itself, keeps
+# running.
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
 strip = true
