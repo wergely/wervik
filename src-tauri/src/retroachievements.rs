@@ -259,6 +259,15 @@ struct RaConsole {
 /// Whole-word overlap (rather than raw substring containment) specifically
 /// avoids "NES" being treated as a match for "SNES" just because it's a
 /// substring of it.
+///
+/// Raw overlap alone isn't enough to break every tie, though: "Game Boy"'s
+/// `display_name`/`short_name` are both literally "Game Boy", whose two
+/// words are equally a subset of RA's "Game Boy", "Game Boy Color" *and*
+/// "Game Boy Advance" — all three score identically, and `max_by_key`
+/// silently returns whichever happens to sort last. A console name that's
+/// an exact word-for-word match (not a superset with extra words) breaks
+/// that tie in favor of the actual platform (same story for "Wii" vs
+/// "Wii U").
 fn find_console_id(consoles: &[RaConsole], platform: Platform) -> Option<u32> {
     let full_words = words(platform.display_name());
     let short_words = words(platform.short_name());
@@ -266,12 +275,13 @@ fn find_console_id(consoles: &[RaConsole], platform: Platform) -> Option<u32> {
         .iter()
         .filter_map(|console| {
             let name_words = words(&console.name);
-            let score = name_words.intersection(&full_words).count()
+            let overlap = name_words.intersection(&full_words).count()
                 + name_words.intersection(&short_words).count();
-            (score > 0).then_some((score, console))
+            let exact_match = name_words == full_words || name_words == short_words;
+            (overlap > 0).then_some((overlap, exact_match, console))
         })
-        .max_by_key(|(score, _)| *score)
-        .map(|(_, console)| console.id)
+        .max_by_key(|(overlap, exact_match, _)| (*overlap, *exact_match))
+        .map(|(_, _, console)| console.id)
 }
 
 #[derive(Debug, Deserialize)]
@@ -761,6 +771,31 @@ mod tests {
     fn does_not_confuse_nes_with_snes() {
         let consoles = vec![console(3, "SNES/Super Famicom"), console(7, "NES/Famicom")];
         assert_eq!(find_console_id(&consoles, Platform::Nes), Some(7));
+    }
+
+    /// Regression test: `Platform::GameBoy`'s `display_name`/`short_name`
+    /// are both plain "Game Boy", so raw word-overlap alone ties three real
+    /// RA consoles at the same score ("Game Boy", "Game Boy Color", "Game
+    /// Boy Advance" all contain both words) — `max_by_key` used to silently
+    /// return whichever sorted last, e.g. matching Game Boy Color's entire
+    /// game list for a plain Game Boy ROM and, finding no title match in
+    /// it, falling back to some unrelated game (see `returns_none_when_nothing_matches`).
+    #[test]
+    fn does_not_confuse_game_boy_with_color_or_advance() {
+        let consoles = vec![
+            console(6, "Game Boy Color"),
+            console(5, "Game Boy Advance"),
+            console(4, "Game Boy"),
+        ];
+        assert_eq!(find_console_id(&consoles, Platform::GameBoy), Some(4));
+    }
+
+    /// Same tie-breaking bug, different platform pair: "Wii" is a literal
+    /// subset of "Wii U"'s words.
+    #[test]
+    fn does_not_confuse_wii_with_wii_u() {
+        let consoles = vec![console(20, "Wii U"), console(19, "Wii")];
+        assert_eq!(find_console_id(&consoles, Platform::Wii), Some(19));
     }
 
     fn game(id: u32, title: &str) -> RaGameListEntry {
