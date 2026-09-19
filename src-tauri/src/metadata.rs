@@ -616,10 +616,7 @@ fn is_retryable_wervik_status(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504)
 }
 
-fn wervik_retry_delay(attempt: u32, retry_after: Option<u64>) -> Duration {
-    if let Some(seconds) = retry_after {
-        return Duration::from_secs(seconds.min(30));
-    }
+fn wervik_retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(500 * 2u64.pow(attempt.saturating_sub(1)).min(8))
 }
 
@@ -644,39 +641,40 @@ fn fetch_game_from_wervik(
         force,
     };
 
+    // Plain `.send_json()` with ureq's default behavior (a non-2xx status
+    // comes back as `Err(ureq::Error::StatusCode(_))`) — the same pattern
+    // every other request in this codebase already uses, rather than the
+    // `http_status_as_error(false)` + manual status inspection this used to
+    // do, which was the only place using that less-exercised part of ureq's
+    // API.
     let mut response = None;
     for attempt in 1..=WERVIK_FETCH_MAX_ATTEMPTS {
         let outcome = agent
             .post(url.as_str())
-            .config()
-            .http_status_as_error(false)
-            .build()
             .header("Authorization", &format!("Bearer {access_token}"))
             .send_json(&request);
-        let candidate = match outcome {
-            Ok(candidate) => candidate,
-            Err(error) if attempt < WERVIK_FETCH_MAX_ATTEMPTS => {
-                eprintln!("Wervik metadata lookup attempt {attempt} failed, retrying: {error}");
-                std::thread::sleep(wervik_retry_delay(attempt, None));
-                continue;
+        match outcome {
+            Ok(candidate) => {
+                response = Some(candidate);
+                break;
             }
-            Err(error) => return Err(format!("Wervik metadata lookup failed: {error}")),
-        };
-        let status = candidate.status().as_u16();
-        if (200..300).contains(&status) {
-            response = Some(candidate);
-            break;
+            Err(ureq::Error::StatusCode(status)) => {
+                if attempt < WERVIK_FETCH_MAX_ATTEMPTS && is_retryable_wervik_status(status) {
+                    eprintln!("Wervik metadata lookup got HTTP {status}, retrying (attempt {attempt})");
+                    std::thread::sleep(wervik_retry_delay(attempt));
+                } else {
+                    return Err(format!("Wervik metadata lookup failed: http status {status}"));
+                }
+            }
+            Err(error) => {
+                if attempt < WERVIK_FETCH_MAX_ATTEMPTS {
+                    eprintln!("Wervik metadata lookup attempt {attempt} failed, retrying: {error}");
+                    std::thread::sleep(wervik_retry_delay(attempt));
+                } else {
+                    return Err(format!("Wervik metadata lookup failed: {error}"));
+                }
+            }
         }
-        if attempt < WERVIK_FETCH_MAX_ATTEMPTS && is_retryable_wervik_status(status) {
-            let retry_after = candidate
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok());
-            std::thread::sleep(wervik_retry_delay(attempt, retry_after));
-            continue;
-        }
-        return Err(format!("Wervik metadata lookup failed: http status {status}"));
     }
     let mut response = response.expect("loop returns before exhausting attempts on success");
 
