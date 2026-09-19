@@ -282,27 +282,33 @@ struct RaGameListEntry {
     title: String,
 }
 
-/// Picks the best title match for `rom_title` the same way IGDB lookups do
-/// (see `metadata::choose_result`): an exact normalized match first, then
-/// either title being a prefix of the other, else the first result.
+/// Picks the best title match for `rom_title`, loosely inspired by IGDB's
+/// own `metadata::choose_result`: an exact normalized match first, then
+/// either title being a prefix of the other. Unlike IGDB's search (which
+/// only ever returns titles already textually related to the query), this
+/// scores against a console's *entire* game list, so — unlike
+/// `choose_result` — a title that matches neither way must return `None`
+/// rather than falling back to some unrelated game merely because it was
+/// least-bad among candidates that don't actually match at all (this used to
+/// silently attach a random other game's achievements, e.g. a Game Boy title
+/// RA doesn't have would fall back to the first game in RA's Game Boy list).
 fn find_game_id(games: &[RaGameListEntry], rom_title: &str) -> Option<u32> {
-    if games.is_empty() {
-        return None;
-    }
     let requested = normalized(rom_title);
     games
         .iter()
-        .min_by_key(|game| {
+        .filter_map(|game| {
             let title = normalized(&game.title);
-            if title == requested {
+            let score = if title == requested {
                 0
             } else if title.starts_with(&requested) || requested.starts_with(&title) {
                 1
             } else {
-                2
-            }
+                return None;
+            };
+            Some((score, game))
         })
-        .map(|game| game.id)
+        .min_by_key(|(score, _)| *score)
+        .map(|(_, game)| game.id)
 }
 
 #[derive(Debug, Deserialize)]
@@ -771,6 +777,16 @@ mod tests {
             game(2, "Super Mario World"),
         ];
         assert_eq!(find_game_id(&games, "Super Mario World"), Some(2));
+    }
+
+    /// Regression test: a title with no real match anywhere in the console's
+    /// game list used to fall back to the first entry regardless — e.g. a
+    /// Game Boy game RA doesn't have would silently borrow Pokemon's
+    /// achievements instead of being reported as unmatched.
+    #[test]
+    fn returns_none_when_nothing_matches() {
+        let games = vec![game(1, "Pokemon Red Version"), game(2, "Pokemon Blue Version")];
+        assert_eq!(find_game_id(&games, "Super Mario Land 2: 6 Golden Coins"), None);
     }
 
     #[test]
