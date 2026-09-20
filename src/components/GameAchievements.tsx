@@ -3,7 +3,12 @@ import { useArtwork } from "../hooks/useArtwork";
 import { useGameAchievements } from "../hooks/useGameAchievements";
 import type { Game } from "../types";
 import { sourceLabel } from "../utils/format";
-import { supportsHardcoreMode, toAchievementDetails, type DisplayAchievement } from "../utils/achievements";
+import {
+  beatenGameCredit,
+  supportsHardcoreMode,
+  toAchievementDetails,
+  type DisplayAchievement,
+} from "../utils/achievements";
 import { AchievementDetailsModal } from "./AchievementDetailsModal";
 import { PlatformIcon } from "./PlatformIcon";
 import { SourceBadge } from "./SourceBadge";
@@ -71,6 +76,7 @@ export function GameAchievements({
     achievements && achievements.totalCount > 0
       ? Math.round((achievements.earnedCount / achievements.totalCount) * 100)
       : 0;
+  const credit = achievements ? beatenGameCredit(achievements) : null;
 
   const recentUnlocks = useMemo(() => {
     if (!achievements) return [];
@@ -181,6 +187,90 @@ export function GameAchievements({
 
       {achievements && achievements.totalCount > 0 && (
         <>
+          {credit && (
+            <section className={styles.creditSection} aria-label="Beaten game credit">
+              <div className={styles.creditHeader}>
+                <h2 className={styles.sectionTitle}>Beaten game credit</h2>
+                <p className={styles.creditHint}>
+                  Unlock <strong>all</strong> progression achievements and <strong>any</strong> win condition
+                  achievement.
+                </p>
+              </div>
+              <div className={styles.creditStats}>
+                {credit.progression.length > 0 && (
+                  <div className={styles.creditStat}>
+                    <div className={styles.creditStatHead}>
+                      <span className={styles.creditStatLabel}>Progression</span>
+                      <span className={styles.creditStatValue}>
+                        {credit.progressionUnlocked}/{credit.progression.length}
+                      </span>
+                    </div>
+                    <div className={styles.progressTrack}>
+                      <div
+                        className={styles.progressFill}
+                        style={{ width: `${(credit.progressionUnlocked / credit.progression.length) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {credit.winCondition.length > 0 && (
+                  <div className={styles.creditStat}>
+                    <div className={styles.creditStatHead}>
+                      <span className={styles.creditStatLabel}>Win condition</span>
+                      <span className={styles.creditStatValue}>
+                        {credit.winConditionUnlocked}/{credit.winCondition.length}
+                      </span>
+                    </div>
+                    <div className={styles.progressTrack}>
+                      <div
+                        className={styles.progressFill}
+                        style={{ width: `${(credit.winConditionUnlocked / credit.winCondition.length) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+              {credit.progression.length > 0 && (
+                <div className={styles.creditList}>
+                  <p className={styles.creditListTitle}>Progression achievements (need all)</p>
+                  <div className={styles.creditRows}>
+                    {credit.progression.map((achievement) => (
+                      <button
+                        key={achievement.id}
+                        type="button"
+                        className={`${styles.creditRow} ${achievement.unlocked ? styles.creditRowDone : ""}`}
+                        data-nav-item
+                        onClick={() => openAchievement(achievement)}
+                      >
+                        <img className={styles.creditRowIcon} src={achievement.iconUrl} alt="" loading="lazy" />
+                        <span className={styles.creditRowTitle}>{achievement.title || "Unnamed achievement"}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {credit.winCondition.length > 0 && (
+                <div className={styles.creditList}>
+                  <p className={styles.creditListTitle}>Win condition achievements (need any)</p>
+                  <div className={styles.creditRows}>
+                    {credit.winCondition.map((achievement) => (
+                      <button
+                        key={achievement.id}
+                        type="button"
+                        className={`${styles.creditRow} ${achievement.unlocked ? styles.creditRowDone : ""}`}
+                        data-nav-item
+                        onClick={() => openAchievement(achievement)}
+                      >
+                        <img className={styles.creditRowIcon} src={achievement.iconUrl} alt="" loading="lazy" />
+                        <span className={styles.creditRowTitle}>{achievement.title || "Unnamed achievement"}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
+
           <div className={styles.toolbar}>
             <input
               type="search"

@@ -99,6 +99,10 @@ export interface RaAchievement {
   unlocked: boolean;
   unlockedHardcore: boolean;
   unlockedAt: number | null;
+  /** RA's own category — drives "beaten game" credit: `"progression"`
+   * (need every one), `"win_condition"` (need any one), `"missable"`, or
+   * `null` for a regular achievement. */
+  achievementType: string | null;
 }
 
 export interface RaGameAchievements {

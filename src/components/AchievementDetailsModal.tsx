@@ -12,7 +12,16 @@ export interface AchievementDetails {
   unlockedHardcore: boolean;
   source: "RetroAchievements" | "Steam";
   gameName?: string;
+  /** RA's "beaten game" category — `"progression"`, `"win_condition"`,
+   * `"missable"`, or absent/null for a regular achievement or a Steam one. */
+  achievementType?: string | null;
 }
+
+const ACHIEVEMENT_TYPE_LABELS: Record<string, string> = {
+  progression: "Progression",
+  win_condition: "Win condition",
+  missable: "Missable",
+};
 
 interface AchievementDetailsModalProps {
   achievement: AchievementDetails;
@@ -118,6 +127,12 @@ export function AchievementDetailsModal({
           <p className={styles.description}>{achievement.description || "No description available."}</p>
 
           <div className={styles.details}>
+            {achievement.achievementType && ACHIEVEMENT_TYPE_LABELS[achievement.achievementType] && (
+              <div className={styles.detailRow}>
+                <span>Category</span>
+                <strong>{ACHIEVEMENT_TYPE_LABELS[achievement.achievementType]}</strong>
+              </div>
+            )}
             {achievement.points != null && (
               <div className={styles.detailRow}>
                 <span>Points</span>

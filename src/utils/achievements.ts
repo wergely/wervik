@@ -24,6 +24,10 @@ export interface DisplayAchievement {
   unlockedHardcore: boolean;
   points: number | null;
   unlockedAt: number | null;
+  /** RA's "beaten game" category — `"progression"`, `"win_condition"`,
+   * `"missable"`, or `null`. Always `null` for Steam, which has no
+   * equivalent concept. */
+  achievementType: string | null;
 }
 
 export function toAchievementDetails(
@@ -54,6 +58,7 @@ export function fromRa(data: RaGameAchievements): DisplayAchievements {
       unlockedHardcore: achievement.unlockedHardcore,
       points: achievement.points,
       unlockedAt: achievement.unlockedAt,
+      achievementType: achievement.achievementType,
     })),
   };
 }
@@ -74,7 +79,32 @@ export function fromSteam(data: SteamGameAchievements): DisplayAchievements {
       unlockedHardcore: false,
       points: null,
       unlockedAt: achievement.unlockedAt,
+      achievementType: null,
     })),
+  };
+}
+
+export interface BeatenGameCredit {
+  progression: DisplayAchievement[];
+  progressionUnlocked: number;
+  winCondition: DisplayAchievement[];
+  winConditionUnlocked: number;
+}
+
+/** RA's "beaten game" credit: awarded once every progression achievement
+ * and at least one win-condition achievement are unlocked. `null` when the
+ * source isn't RetroAchievements, or this particular set was never tagged
+ * with either category (most older/smaller achievement sets aren't). */
+export function beatenGameCredit(achievements: DisplayAchievements): BeatenGameCredit | null {
+  if (achievements.source !== "retroachievements") return null;
+  const progression = achievements.achievements.filter((a) => a.achievementType === "progression");
+  const winCondition = achievements.achievements.filter((a) => a.achievementType === "win_condition");
+  if (progression.length === 0 && winCondition.length === 0) return null;
+  return {
+    progression,
+    progressionUnlocked: progression.filter((a) => a.unlocked).length,
+    winCondition,
+    winConditionUnlocked: winCondition.filter((a) => a.unlocked).length,
   };
 }
 

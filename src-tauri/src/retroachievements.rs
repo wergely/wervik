@@ -59,6 +59,13 @@ pub struct Achievement {
     /// cached progress.
     #[serde(default)]
     pub unlocked_at: Option<i64>,
+    /// RA's own achievement category — `"progression"`, `"win_condition"`,
+    /// `"missable"`, or `None` for a regular achievement. Drives "beaten
+    /// game" credit: RA awards it once every progression achievement and at
+    /// least one win-condition achievement are unlocked. `#[serde(default)]`
+    /// for the same cache-compatibility reason as `unlocked_at`.
+    #[serde(default)]
+    pub achievement_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,6 +340,10 @@ struct RaAchievementEntry {
     points: u32,
     #[serde(rename = "BadgeName")]
     badge_name: String,
+    /// Casing isn't consistent across RA's API surface (see
+    /// `deserialize_flexible_u32` below) — accept both `Type` and `type`.
+    #[serde(rename = "Type", alias = "type", default)]
+    achievement_type: Option<String>,
     #[serde(rename = "DateEarned")]
     date_earned: Option<String>,
     #[serde(rename = "DateEarnedHardcore")]
@@ -411,6 +422,7 @@ fn fetch_progress(
             unlocked: entry.date_earned.is_some(),
             unlocked_hardcore: entry.date_earned_hardcore.is_some(),
             unlocked_at: entry.date_earned.as_deref().and_then(parse_ra_date),
+            achievement_type: entry.achievement_type,
         })
         .collect();
     achievements.sort_by(|a, b| a.id.cmp(&b.id));
