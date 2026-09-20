@@ -662,12 +662,17 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
+        // Resets `running` no matter how this closure ends — including an
+        // unhandled panic partway through — so a bug here can't silently
+        // block every future RetroAchievements sweep until the app
+        // restarts.
+        let _running_guard = FetchRunningGuard(running);
+
         let agent = new_agent();
         let consoles = match fetch_consoles(&agent, &api_key) {
             Ok(consoles) => consoles,
             Err(error) => {
                 eprintln!("RetroAchievements worker could not list consoles: {error}");
-                running.store(false, Ordering::SeqCst);
                 return;
             }
         };
@@ -728,11 +733,18 @@ pub fn spawn_fetch(
             }
             std::thread::sleep(SWEEP_REQUEST_DELAY);
         }
-        running.store(false, Ordering::SeqCst);
         if updated_any {
             crate::commands::schedule_wervik_achievements_sync(&app_handle);
         }
     });
+}
+
+struct FetchRunningGuard(Arc<AtomicBool>);
+
+impl Drop for FetchRunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]

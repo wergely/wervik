@@ -916,6 +916,18 @@ pub fn spawn_fetch(
     }
 
     std::thread::spawn(move || {
+        // Resets `running` (and, if this sweep is still current, the
+        // generation-gated cleanup `finish_fetch` also does) no matter how
+        // this closure ends — including an unhandled panic partway through.
+        // Without this, a panic here would leave `running` stuck at `true`
+        // forever, silently blocking every future "Refresh metadata" until
+        // the app restarts.
+        let _running_guard = FetchRunningGuard {
+            running,
+            generation: generation.clone(),
+            generation_id,
+        };
+
         let igdb_credentials = match provider {
             MetadataProvider::Igdb => credentials(&stored_client_id, &stored_client_secret),
             MetadataProvider::Wervik => None,
@@ -928,7 +940,6 @@ pub fn spawn_fetch(
         {
             progress.done.store(0, Ordering::SeqCst);
             progress.total.store(0, Ordering::SeqCst);
-            finish_fetch(&running, &generation, generation_id);
             return;
         }
         let agent = new_agent();
@@ -938,7 +949,6 @@ pub fn spawn_fetch(
                     Ok(token) => Some(token),
                     Err(error) => {
                         eprintln!("IGDB metadata worker authentication failed: {error}");
-                        finish_fetch(&running, &generation, generation_id);
                         return;
                     }
                 }
@@ -999,11 +1009,22 @@ pub fn spawn_fetch(
             }
         }
         let completed = generation.load(Ordering::SeqCst) == generation_id;
-        finish_fetch(&running, &generation, generation_id);
         if completed && updated_any.load(Ordering::SeqCst) {
             crate::commands::schedule_wervik_library_sync(&app_handle);
         }
     });
+}
+
+struct FetchRunningGuard {
+    running: Arc<AtomicBool>,
+    generation: Arc<AtomicUsize>,
+    generation_id: usize,
+}
+
+impl Drop for FetchRunningGuard {
+    fn drop(&mut self) {
+        finish_fetch(&self.running, &self.generation, self.generation_id);
+    }
 }
 
 #[derive(PartialEq, Eq)]

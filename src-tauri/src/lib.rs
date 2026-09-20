@@ -7,6 +7,7 @@ mod game_setup;
 mod mangohud;
 mod metadata;
 mod nexus;
+mod panic_log;
 mod platform;
 mod playtime;
 mod retro;
@@ -55,6 +56,7 @@ pub fn run() {
             }
 
             let app_data_dir = app.path().app_data_dir()?;
+            panic_log::install(&app_data_dir);
             let mut store = Store::load(&app_data_dir);
             let playtime =
                 playtime::PlaytimeDb::open(&app_data_dir.join("wervik-playtime.sqlite3"))
