@@ -63,11 +63,40 @@ pub fn scan(steam_root: &Path) -> ScanResult {
         }
     }
 
+    let mut games = dedupe_by_app_id(games);
     games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
     ScanResult {
         games,
         library_folders: folders.into_iter().map(|f| f.path).collect(),
+    }
+}
+
+/// A game can have a fully-installed manifest in more than one library
+/// folder at once — e.g. a leftover copy left behind after moving the
+/// install to another drive, which Steam itself doesn't always clean up —
+/// so scanning every folder can otherwise produce two entries for the same
+/// `app_id`. Keeps whichever looks like the one actually being played.
+fn dedupe_by_app_id(games: Vec<Game>) -> Vec<Game> {
+    let mut by_id: HashMap<u32, Game> = HashMap::new();
+    for game in games {
+        let app_id = game.app_id;
+        match by_id.get(&app_id) {
+            Some(existing) if !is_more_current(&game, existing) => {}
+            _ => {
+                by_id.insert(app_id, game);
+            }
+        }
+    }
+    by_id.into_values().collect()
+}
+
+fn is_more_current(candidate: &Game, current: &Game) -> bool {
+    match (candidate.last_played, current.last_played) {
+        (Some(a), Some(b)) => a > b,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate.size_on_disk_bytes > current.size_on_disk_bytes,
     }
 }
 
@@ -180,4 +209,47 @@ fn load_playtimes(steam_root: &Path) -> HashMap<u32, PlaytimeEntry> {
     }
 
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn game(app_id: u32, last_played: Option<i64>, size_on_disk_bytes: u64) -> Game {
+        Game {
+            app_id,
+            name: format!("Game {app_id}"),
+            install_dir: PathBuf::new(),
+            library_path: PathBuf::new(),
+            size_on_disk_bytes,
+            last_played,
+            playtime_minutes: None,
+            cover_path: None,
+            hero_path: None,
+            logo_path: None,
+        }
+    }
+
+    #[test]
+    fn dedupes_by_app_id_keeping_most_recently_played() {
+        let games = vec![
+            game(1, Some(100), 10),
+            game(1, Some(200), 10),
+            game(2, None, 5),
+        ];
+        let deduped = dedupe_by_app_id(games);
+        assert_eq!(deduped.len(), 2);
+        let kept = deduped.iter().find(|g| g.app_id == 1).unwrap();
+        assert_eq!(kept.last_played, Some(200));
+    }
+
+    /// When neither copy has a recorded last-played time, the larger
+    /// install (more likely the real one, not an abandoned leftover) wins.
+    #[test]
+    fn dedupes_by_app_id_falling_back_to_size_on_disk() {
+        let games = vec![game(1, None, 500), game(1, None, 900_000_000)];
+        let deduped = dedupe_by_app_id(games);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].size_on_disk_bytes, 900_000_000);
+    }
 }
