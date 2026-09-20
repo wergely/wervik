@@ -3,6 +3,7 @@ name = "wervik"
 version = "0.1.11"
 description = "Wervik — your Steam and retro games, one library."
 authors = ["Wergely"]
+license = "GPL-3.0-or-later"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
