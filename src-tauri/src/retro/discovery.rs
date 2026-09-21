@@ -145,6 +145,27 @@ fn platform_for_zip(path: &Path) -> Option<Platform> {
     Some(platform)
 }
 
+/// Reads the identity of the ROM entry `best_zip_entry_name` would pick out
+/// of `zip_path` — its name, CRC32, and uncompressed size, straight from
+/// the zip's central directory, without decompressing anything. Used to
+/// fingerprint which exact ROM a zip contains for the RA hash cache (see
+/// `retroachievements::RomHashCache`): a zip rewritten by a different tool
+/// (different outer file size/modified time) but still containing
+/// byte-identical ROM data has the same CRC32/size here, so the cache can
+/// tell it's safe to keep the hash it already computed instead of
+/// re-extracting for nothing. Deliberately reuses `best_zip_entry_name`
+/// rather than picking independently — if this and `extract_rom_from_zip`
+/// ever disagreed on which entry is "the ROM", the cache would silently key
+/// itself to the wrong file.
+pub fn zip_rom_entry_fingerprint(zip_path: &Path) -> Result<(String, u32, u64), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let name = best_zip_entry_name(&archive)
+        .ok_or_else(|| "This zip has no recognizable ROM inside it".to_string())?;
+    let entry = archive.by_name(&name).map_err(|e| e.to_string())?;
+    Ok((name, entry.crc32(), entry.size()))
+}
+
 /// Extracts the ROM `best_zip_entry_name` identifies out of `zip_path` into
 /// `dest_dir`, returning its path — native emulators can't read a zipped ROM
 /// directly. The caller is responsible for cleaning up `dest_dir` once

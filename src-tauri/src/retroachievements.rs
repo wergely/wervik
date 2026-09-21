@@ -41,6 +41,7 @@ use ureq::Agent;
 
 use crate::commands::AppStateHandle;
 use crate::retro::platform::Platform;
+use crate::retro::ra_hash;
 
 const CACHE_MAX_AGE_SECONDS: i64 = 60 * 60 * 3;
 /// How long a "no match" is remembered before retrying — much longer than
@@ -219,6 +220,113 @@ impl RetroAchievementsCache {
         let json = serde_json::to_string_pretty(&CacheFile {
             entries: self.entries.clone(),
             misses: self.misses.clone(),
+        })
+        .map_err(|error| error.to_string())?;
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::write(&self.path, json).map_err(|error| error.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RomHashCacheEntry {
+    schema_version: u32,
+    outer_size: u64,
+    outer_modified_at: i64,
+    #[serde(default)]
+    entry_name: Option<String>,
+    #[serde(default)]
+    entry_crc32: Option<u32>,
+    #[serde(default)]
+    entry_size: Option<u64>,
+    hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct RomHashCacheFile {
+    #[serde(default)]
+    entries: HashMap<String, RomHashCacheEntry>,
+}
+
+/// Caches the RA-compatible content hash `ra_hash::hash` computes for a ROM
+/// file, so a zip only ever needs to be extracted and hashed once — not
+/// once per sweep, which without this cache happens every time the
+/// achievements cache entry that hash produced turns stale again (every
+/// `CACHE_MAX_AGE_SECONDS`), forever, for every zipped cartridge ROM in the
+/// library. Keyed by `ra_hash::RomFingerprint` (see its own doc comment for
+/// why that's more than just "the ROM file's own size/modified time") plus
+/// `ra_hash::RA_HASH_SCHEMA_VERSION`, so a change to the hashing rules
+/// themselves invalidates every cached entry rather than silently keeping a
+/// hash computed under the old rules.
+#[derive(Debug)]
+pub struct RomHashCache {
+    path: PathBuf,
+    entries: HashMap<String, RomHashCacheEntry>,
+}
+
+impl RomHashCache {
+    pub fn load(path: &Path) -> Self {
+        let entries = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<RomHashCacheFile>(&contents).ok())
+            .map(|file| file.entries)
+            .unwrap_or_default();
+        Self {
+            path: path.to_path_buf(),
+            entries,
+        }
+    }
+
+    /// `None` on a genuine miss (never seen this ROM, or the schema version
+    /// moved on). On a hit where the zip's own (size, modified time) changed
+    /// but its chosen entry's identity (name/CRC32/uncompressed size) is
+    /// still the same, this refreshes the stored outer fields in place
+    /// (persisting the refresh) instead of forcing a real recompute.
+    fn get(&mut self, rom_path: &str, fingerprint: &ra_hash::RomFingerprint) -> Option<String> {
+        let entry = self.entries.get(rom_path)?;
+        if entry.schema_version != ra_hash::RA_HASH_SCHEMA_VERSION {
+            return None;
+        }
+        if entry.outer_size == fingerprint.outer_size && entry.outer_modified_at == fingerprint.outer_modified_at {
+            return Some(entry.hash.clone());
+        }
+        if fingerprint.entry_name.is_none()
+            || entry.entry_name != fingerprint.entry_name
+            || entry.entry_crc32 != fingerprint.entry_crc32
+            || entry.entry_size != fingerprint.entry_size
+        {
+            return None;
+        }
+
+        let hash = entry.hash.clone();
+        if let Some(entry) = self.entries.get_mut(rom_path) {
+            entry.outer_size = fingerprint.outer_size;
+            entry.outer_modified_at = fingerprint.outer_modified_at;
+        }
+        let _ = self.persist();
+        Some(hash)
+    }
+
+    fn put(&mut self, rom_path: String, fingerprint: ra_hash::RomFingerprint, hash: String) -> Result<(), String> {
+        self.entries.insert(
+            rom_path,
+            RomHashCacheEntry {
+                schema_version: ra_hash::RA_HASH_SCHEMA_VERSION,
+                outer_size: fingerprint.outer_size,
+                outer_modified_at: fingerprint.outer_modified_at,
+                entry_name: fingerprint.entry_name,
+                entry_crc32: fingerprint.entry_crc32,
+                entry_size: fingerprint.entry_size,
+                hash,
+            },
+        );
+        self.persist()
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(&RomHashCacheFile {
+            entries: self.entries.clone(),
         })
         .map_err(|error| error.to_string())?;
         if let Some(parent) = self.path.parent() {
@@ -539,8 +647,44 @@ fn fetch_progress(
     })
 }
 
+/// Resolves `rom_path`'s RA-compatible content hash, consulting (and
+/// updating) the app's persistent `RomHashCache` around the actual
+/// `ra_hash::hash` call so a given ROM is only ever extracted/hashed once —
+/// see `RomHashCache`'s own doc comment for why. `None` means `platform`
+/// isn't hash-identifiable at all (see `ra_hash::is_hashable`); a fingerprint
+/// or hashing failure is a real `Err`, not folded into `None`, so the caller
+/// can tell "not applicable" apart from "went wrong" for its own logging.
+fn rom_hash_for(app_handle: &AppHandle, platform: Platform, rom_path: &Path) -> Option<Result<String, String>> {
+    if !ra_hash::is_hashable(platform) {
+        return None;
+    }
+    let fingerprint = match ra_hash::fingerprint(rom_path) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => return Some(Err(error)),
+    };
+    let cache_key = rom_path.to_string_lossy().into_owned();
+
+    if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hash) = state.rom_hash_cache.get(&cache_key, &fingerprint) {
+            return Some(Ok(hash));
+        }
+    }
+
+    let result = ra_hash::hash(rom_path, platform)?;
+    if let Ok(hash) = &result {
+        if let Some(state) = app_handle.try_state::<AppStateHandle>() {
+            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(error) = state.rom_hash_cache.put(cache_key, fingerprint, hash.clone()) {
+                eprintln!("Could not save ROM hash cache entry: {error}");
+            }
+        }
+    }
+    Some(result)
+}
+
 /// Shared by the on-demand single-game lookup and the background sweep:
-/// tries a real content-hash lookup first (see `retro::ra_hash`), which is
+/// tries a real content-hash lookup first (see `rom_hash_for`), which is
 /// exact and needs no console/title list at all. Falls back to resolving
 /// `platform`'s RA console id from `consoles`, then that console's game
 /// list — cached in `game_lists` since a sweep looks up many ROMs on the
@@ -553,11 +697,12 @@ fn resolve_game_id(
     api_key: &str,
     consoles: &[RaConsole],
     game_lists: &mut HashMap<u32, Vec<RaGameListEntry>>,
+    app_handle: &AppHandle,
     platform: Platform,
     rom_path: &Path,
     rom_title: &str,
 ) -> Result<Option<u32>, String> {
-    if let Some(hash_result) = crate::retro::ra_hash::hash(rom_path, platform) {
+    if let Some(hash_result) = rom_hash_for(app_handle, platform, rom_path) {
         match hash_result {
             Ok(hash) => {
                 if let Some(game_id) = fetch_game_id_by_hash(agent, api_key, &hash)? {
@@ -586,6 +731,7 @@ fn resolve_game_id(
 pub fn fetch_for_game(
     username: &str,
     api_key: &str,
+    app_handle: &AppHandle,
     platform: Platform,
     rom_path: &Path,
     rom_title: &str,
@@ -598,6 +744,7 @@ pub fn fetch_for_game(
         api_key,
         &consoles,
         &mut game_lists,
+        app_handle,
         platform,
         rom_path,
         rom_title,
@@ -814,6 +961,7 @@ pub fn spawn_fetch(
                 &api_key,
                 &consoles,
                 &mut game_lists,
+                &app_handle,
                 query.platform,
                 &query.rom_path,
                 &query.name,
@@ -1046,5 +1194,117 @@ mod tests {
             achievement(Some("win_condition"), true),
         ]);
         assert!(achievements.is_beaten());
+    }
+
+    fn temp_cache_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wervik-rom-hash-cache-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("cache.json")
+    }
+
+    fn fp(outer_size: u64, outer_modified_at: i64) -> ra_hash::RomFingerprint {
+        ra_hash::RomFingerprint {
+            outer_size,
+            outer_modified_at,
+            entry_name: None,
+            entry_crc32: None,
+            entry_size: None,
+        }
+    }
+
+    fn zip_fp(
+        outer_size: u64,
+        outer_modified_at: i64,
+        entry_name: &str,
+        entry_crc32: u32,
+        entry_size: u64,
+    ) -> ra_hash::RomFingerprint {
+        ra_hash::RomFingerprint {
+            outer_size,
+            outer_modified_at,
+            entry_name: Some(entry_name.to_string()),
+            entry_crc32: Some(entry_crc32),
+            entry_size: Some(entry_size),
+        }
+    }
+
+    #[test]
+    fn rom_hash_cache_hits_on_an_unchanged_fingerprint() {
+        let path = temp_cache_path("hit");
+        let mut cache = RomHashCache::load(&path);
+        cache
+            .put("rom.gba".to_string(), fp(100, 200), "abc123".to_string())
+            .unwrap();
+        assert_eq!(cache.get("rom.gba", &fp(100, 200)), Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn rom_hash_cache_misses_when_outer_fingerprint_changes_for_a_loose_rom() {
+        let path = temp_cache_path("miss-loose");
+        let mut cache = RomHashCache::load(&path);
+        cache
+            .put("rom.gba".to_string(), fp(100, 200), "abc123".to_string())
+            .unwrap();
+        // A loose ROM has no zip entry to fall back on - any outer change is a miss.
+        assert_eq!(cache.get("rom.gba", &fp(100, 999)), None);
+    }
+
+    #[test]
+    fn rom_hash_cache_refreshes_when_a_zips_outer_metadata_changes_but_its_entry_does_not() {
+        let path = temp_cache_path("refresh");
+        let mut cache = RomHashCache::load(&path);
+        cache
+            .put(
+                "rom.zip".to_string(),
+                zip_fp(500, 111, "game.gba", 42, 300),
+                "abc123".to_string(),
+            )
+            .unwrap();
+        // Same entry identity (name/CRC32/size), different outer size/mtime -
+        // a repack of the exact same ROM data.
+        let refreshed = zip_fp(600, 222, "game.gba", 42, 300);
+        assert_eq!(cache.get("rom.zip", &refreshed), Some("abc123".to_string()));
+        // The refresh was persisted in place - a later lookup against the
+        // *new* outer fingerprint hits directly, no entry comparison needed.
+        assert_eq!(cache.get("rom.zip", &refreshed), Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn rom_hash_cache_misses_when_a_zips_entry_itself_changes() {
+        let path = temp_cache_path("entry-changed");
+        let mut cache = RomHashCache::load(&path);
+        cache
+            .put(
+                "rom.zip".to_string(),
+                zip_fp(500, 111, "game.gba", 42, 300),
+                "abc123".to_string(),
+            )
+            .unwrap();
+        // Outer metadata *and* CRC32 both changed - the ROM data inside
+        // actually changed, not just a repack of the same bytes (that case
+        // is covered by the "refreshes" test above, where only the outer
+        // metadata differs).
+        let changed = zip_fp(600, 222, "game.gba", 99, 300);
+        assert_eq!(cache.get("rom.zip", &changed), None);
+    }
+
+    #[test]
+    fn rom_hash_cache_misses_on_a_schema_version_bump() {
+        let path = temp_cache_path("schema");
+        let mut cache = RomHashCache::load(&path);
+        cache.entries.insert(
+            "rom.gba".to_string(),
+            RomHashCacheEntry {
+                schema_version: ra_hash::RA_HASH_SCHEMA_VERSION.wrapping_sub(1),
+                outer_size: 100,
+                outer_modified_at: 200,
+                entry_name: None,
+                entry_crc32: None,
+                entry_size: None,
+                hash: "stale".to_string(),
+            },
+        );
+        assert_eq!(cache.get("rom.gba", &fp(100, 200)), None);
     }
 }

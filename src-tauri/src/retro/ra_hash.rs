@@ -33,13 +33,86 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use md5::{Digest, Md5};
 
-use super::discovery::extract_rom_from_zip;
+use super::discovery::{extract_rom_from_zip, zip_rom_entry_fingerprint};
 use super::platform::Platform;
 
 /// RA's own cap on how much of a file it will hash — irrelevant for real
 /// cartridge dumps (the largest, N64, tops out well under this), kept only
 /// for parity with `rcheevos`' `MAX_BUFFER_SIZE`.
 const MAX_HASH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Bumped whenever a hashing rule in this module changes (a fixed header
+/// size, a byteswap rule, which platforms are covered at all...) so
+/// `RomHashCache` can tell a cached hash was computed under old rules and
+/// needs recomputing, without having to reason about which specific cached
+/// entries a given code change could have affected.
+pub const RA_HASH_SCHEMA_VERSION: u32 = 1;
+
+fn is_zip(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
+/// Whether `platform` is one [`hash`] can compute a hash for at all — lets a
+/// caller skip fingerprinting a ROM entirely for a platform [`hash`] would
+/// just return `None` for anyway (see its own doc comment).
+pub fn is_hashable(platform: Platform) -> bool {
+    strategy_for(platform).is_some()
+}
+
+/// A cheap-to-compute identity for a ROM file, used to key `RomHashCache`
+/// without ever having to re-extract/re-hash to find out whether a cached
+/// hash is still valid.
+///
+/// For a loose ROM file, this is just its own (size, modified time). For a
+/// `.zip`, it's a two-tier fingerprint: the zip's own (size, modified time)
+/// — cheap enough that the common case (file untouched since last time)
+/// costs only a `stat()` — plus the *chosen entry's* name/CRC32/uncompressed
+/// size, read straight from the zip's central directory without
+/// decompressing anything (see `discovery::zip_rom_entry_fingerprint`), so a
+/// zip that gets rewritten (different outer size/modified time — a
+/// different packing tool, a re-download, ...) but still contains
+/// byte-identical ROM data still hits the cache instead of re-extracting
+/// for nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RomFingerprint {
+    pub outer_size: u64,
+    pub outer_modified_at: i64,
+    pub entry_name: Option<String>,
+    pub entry_crc32: Option<u32>,
+    pub entry_size: Option<u64>,
+}
+
+pub fn fingerprint(path: &Path) -> Result<RomFingerprint, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    let outer_size = metadata.len();
+    let outer_modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+
+    if !is_zip(path) {
+        return Ok(RomFingerprint {
+            outer_size,
+            outer_modified_at,
+            entry_name: None,
+            entry_crc32: None,
+            entry_size: None,
+        });
+    }
+
+    let (entry_name, entry_crc32, entry_size) = zip_rom_entry_fingerprint(path)?;
+    Ok(RomFingerprint {
+        outer_size,
+        outer_modified_at,
+        entry_name: Some(entry_name),
+        entry_crc32: Some(entry_crc32),
+        entry_size: Some(entry_size),
+    })
+}
 
 /// How much of the start of a file `peek_header` reads to sniff a
 /// content-based header signature (the largest need is Atari7800's 10-byte
@@ -94,11 +167,7 @@ pub fn hash(path: &Path, platform: Platform) -> Option<Result<String, String>> {
 }
 
 fn hash_with_strategy(path: &Path, strategy: Strategy) -> Result<String, String> {
-    let is_zip = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"));
-    if !is_zip {
+    if !is_zip(path) {
         return run_strategy(path, strategy);
     }
 
@@ -466,6 +535,55 @@ mod tests {
         write_zip(&zip_path, "Some N64 Game (USA).z64", &z64);
 
         assert_eq!(hash(&zip_path, Platform::Nintendo64).unwrap().unwrap(), md5_hex(&z64));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_hashable_matches_hash_none_ness() {
+        assert!(is_hashable(Platform::Nintendo64));
+        assert!(is_hashable(Platform::GameBoyAdvance));
+        assert!(!is_hashable(Platform::PlayStation));
+        assert!(!is_hashable(Platform::Atari5200));
+    }
+
+    #[test]
+    fn fingerprints_a_loose_rom_by_size_and_mtime_only() {
+        let dir = temp_dir("fingerprint-loose");
+        let path = dir.join("game.gba");
+        std::fs::write(&path, b"some rom bytes").unwrap();
+
+        let fp = fingerprint(&path).unwrap();
+        assert_eq!(fp.outer_size, 14);
+        assert!(fp.entry_name.is_none());
+        assert!(fp.entry_crc32.is_none());
+        assert!(fp.entry_size.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fingerprints_a_zip_by_its_chosen_entrys_identity() {
+        let dir = temp_dir("fingerprint-zip");
+        let data = b"a small gba rom, zipped up";
+        let zip_path = dir.join("Some Game (USA).zip");
+        write_zip(&zip_path, "Some Game (USA).gba", data);
+
+        let fp = fingerprint(&zip_path).unwrap();
+        assert_eq!(fp.entry_name.as_deref(), Some("Some Game (USA).gba"));
+        assert_eq!(fp.entry_size, Some(data.len() as u64));
+        assert!(fp.entry_crc32.is_some());
+
+        // Re-zipping the exact same entry (different outer file, so a
+        // different mtime/possibly different size due to compression
+        // timestamps) still fingerprints to the same entry identity - the
+        // whole point of tracking the entry separately from the outer file.
+        let rezipped_path = dir.join("Same Game, Repacked.zip");
+        write_zip(&rezipped_path, "Some Game (USA).gba", data);
+        let fp2 = fingerprint(&rezipped_path).unwrap();
+        assert_eq!(fp.entry_name, fp2.entry_name);
+        assert_eq!(fp.entry_crc32, fp2.entry_crc32);
+        assert_eq!(fp.entry_size, fp2.entry_size);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

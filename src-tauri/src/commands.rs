@@ -28,7 +28,7 @@ use crate::retro::{
     artwork, bios, discovery as retro_discovery, naming as retro_naming, native as retro_native,
     saves,
 };
-use crate::retroachievements::{self, GameAchievements, RaProfileSummary, RetroAchievementsCache};
+use crate::retroachievements::{self, GameAchievements, RaProfileSummary, RetroAchievementsCache, RomHashCache};
 use crate::steam::achievements::{self as steam_achievements, SteamAchievementsCache};
 use crate::steam::discovery::{self, LaunchKind, SteamInstall};
 use crate::steam::launch;
@@ -58,6 +58,7 @@ pub struct AppState {
     /// Guards against two RetroAchievements sweeps running at once — same
     /// reasoning as `artwork_fetch_running`.
     pub retro_achievements_fetch_running: Arc<AtomicBool>,
+    pub rom_hash_cache: RomHashCache,
     pub steam_achievements_cache: SteamAchievementsCache,
     /// Guards against two Steam achievements sweeps running at once — same
     /// reasoning as `artwork_fetch_running`.
@@ -1867,7 +1868,7 @@ pub fn get_retro_achievements(
     game_id: String,
     force: bool,
 ) -> Result<Option<GameAchievements>, String> {
-    let (rom, username, api_key, fresh, stale) = {
+    let (rom, username, api_key, fresh, stale, app_handle) = {
         let state = state.lock().unwrap_or_else(|e| e.into_inner());
         let Some(rom) = state.rom_games.iter().find(|r| r.id == game_id).cloned() else {
             return Ok(None);
@@ -1879,6 +1880,7 @@ pub fn get_retro_achievements(
             settings.ra_api_key,
             state.retro_achievements_cache.get_fresh(&game_id),
             state.retro_achievements_cache.get(&game_id),
+            state.app_handle.clone(),
         )
     };
     if username.trim().is_empty() || api_key.trim().is_empty() {
@@ -1893,6 +1895,7 @@ pub fn get_retro_achievements(
     match retroachievements::fetch_for_game(
         &username,
         &api_key,
+        &app_handle,
         rom.platform,
         Path::new(&rom.rom_path),
         &rom.name,

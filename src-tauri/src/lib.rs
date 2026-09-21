@@ -67,6 +67,9 @@ pub fn run() {
             let retro_achievements_cache = retroachievements::RetroAchievementsCache::load(
                 &app_data_dir.join("wervik-retroachievements.json"),
             );
+            let rom_hash_cache = retroachievements::RomHashCache::load(
+                &app_data_dir.join("wervik-rom-hashes.json"),
+            );
             let steam_achievements_cache = steam::achievements::SteamAchievementsCache::load(
                 &app_data_dir.join("wervik-steam-achievements.json"),
             );
@@ -171,6 +174,7 @@ pub fn run() {
                 nexus_cache,
                 retro_achievements_cache,
                 retro_achievements_fetch_running,
+                rom_hash_cache,
                 steam_achievements_cache,
                 steam_achievements_fetch_running,
                 steam_owned_games_cache,
