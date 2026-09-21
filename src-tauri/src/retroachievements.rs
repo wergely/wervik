@@ -405,17 +405,21 @@ struct RaGameIdResponse {
 
 /// Looks up the exact RA game a content hash belongs to — the same
 /// `m=`(hash) lookup a real client sends after computing a ROM's hash
-/// itself. `Ok(None)` covers both "RA doesn't recognize this hash" (a
-/// `GameID` of 0, e.g. an unrecognized ROM hack, homebrew, or bad dump) and
-/// a response RA didn't attach a game to.
+/// itself. `Ok(None)` covers every "no match" case: a plain HTTP 404 (unlike
+/// most of RA's other endpoints, this one answers an unrecognized hash —
+/// e.g. an unrecognized ROM hack, homebrew, or bad dump — with a 404 rather
+/// than a 200 carrying `GameID: 0`, though a `GameID: 0` is still handled
+/// the same way in case that ever changes).
 fn fetch_game_id_by_hash(agent: &Agent, api_key: &str, hash: &str) -> Result<Option<u32>, String> {
     let url = format!("https://retroachievements.org/API/API_GetGameID.php?y={api_key}&m={hash}");
-    let response = agent
-        .get(&url)
-        .call()
-        .map_err(|error| format!("RetroAchievements request failed: {error}"))?
+    let mut response = match agent.get(&url).call() {
+        Ok(response) => response,
+        Err(ureq::Error::StatusCode(404)) => return Ok(None),
+        Err(error) => return Err(format!("RetroAchievements request failed: {error}")),
+    };
+    let response: RaGameIdResponse = response
         .body_mut()
-        .read_json::<RaGameIdResponse>()
+        .read_json()
         .map_err(|error| format!("Could not read RetroAchievements hash lookup: {error}"))?;
     Ok((response.game_id != 0).then_some(response.game_id))
 }
