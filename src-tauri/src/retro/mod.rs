@@ -6,4 +6,5 @@ pub mod discovery;
 pub mod naming;
 pub mod native;
 pub mod platform;
+pub mod ra_hash;
 pub mod saves;

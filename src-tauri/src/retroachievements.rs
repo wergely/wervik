@@ -4,12 +4,19 @@
 //!
 //! RetroAchievements has no title-search endpoint — real clients identify a
 //! ROM by hashing its contents with a console-specific algorithm and
-//! looking that hash up. Implementing every console's hash algorithm is a
-//! separate project on its own, so this instead fetches the console's full
-//! game list and matches by title using the same best-effort fuzzy
-//! matching already used for IGDB (see `metadata::choose_result`) — good
-//! enough for a progress viewer, not exact enough for anything that needs
-//! to be certain it has the right release.
+//! looking that hash up (`API_GetGameID.php?m=`). For cartridge-based
+//! platforms, `resolve_game_id` does exactly that via `retro::ra_hash`
+//! (ported from RA's own open-source `rcheevos` library), so it lands on
+//! the same game/hash-set a real client (RetroArch, gopher64, ...) would for
+//! the same file — title-matching alone can't tell apart RA entries that
+//! share a title but not a hash (different regions/revisions, ROM hacks,
+//! and so on). Disc-based platforms, Arcade, and Atari 5200 have no hashing
+//! support here (`ra_hash::hash` returns `None` for them; see its own doc
+//! comment) and fall back to fetching the console's full game list and
+//! matching by title using the same best-effort fuzzy matching already used
+//! for IGDB (see `metadata::choose_result`) — good enough for a progress
+//! viewer, not exact enough for anything that needs to be certain it has
+//! the right release.
 //!
 //! Live achievement *unlocking* (popups, hardcore mode, memory-address
 //! triggers) is a different, unrelated integration — see
@@ -390,6 +397,29 @@ fn fetch_game_list(
         .map_err(|error| format!("Could not read RetroAchievements game list: {error}"))
 }
 
+#[derive(Debug, Deserialize)]
+struct RaGameIdResponse {
+    #[serde(rename = "GameID")]
+    game_id: u32,
+}
+
+/// Looks up the exact RA game a content hash belongs to — the same
+/// `m=`(hash) lookup a real client sends after computing a ROM's hash
+/// itself. `Ok(None)` covers both "RA doesn't recognize this hash" (a
+/// `GameID` of 0, e.g. an unrecognized ROM hack, homebrew, or bad dump) and
+/// a response RA didn't attach a game to.
+fn fetch_game_id_by_hash(agent: &Agent, api_key: &str, hash: &str) -> Result<Option<u32>, String> {
+    let url = format!("https://retroachievements.org/API/API_GetGameID.php?y={api_key}&m={hash}");
+    let response = agent
+        .get(&url)
+        .call()
+        .map_err(|error| format!("RetroAchievements request failed: {error}"))?
+        .body_mut()
+        .read_json::<RaGameIdResponse>()
+        .map_err(|error| format!("Could not read RetroAchievements hash lookup: {error}"))?;
+    Ok((response.game_id != 0).then_some(response.game_id))
+}
+
 fn fetch_progress(
     agent: &Agent,
     api_key: &str,
@@ -450,18 +480,36 @@ fn fetch_progress(
 }
 
 /// Shared by the on-demand single-game lookup and the background sweep:
-/// resolves `platform`'s RA console id from `consoles`, then that
-/// console's game list — cached in `game_lists` since a sweep looks up
-/// many ROMs on the same handful of consoles — then the game's RA id
-/// within it.
+/// tries a real content-hash lookup first (see `retro::ra_hash`), which is
+/// exact and needs no console/title list at all. Falls back to resolving
+/// `platform`'s RA console id from `consoles`, then that console's game
+/// list — cached in `game_lists` since a sweep looks up many ROMs on the
+/// same handful of consoles — then a title match within it, for anything
+/// hashing can't resolve: a disc-based platform/Arcade/Atari 5200 (`ra_hash`
+/// returns `None`), an unreadable ROM file, or a hash RA simply doesn't
+/// recognize (unrecognized ROM hack, homebrew, bad dump).
 fn resolve_game_id(
     agent: &Agent,
     api_key: &str,
     consoles: &[RaConsole],
     game_lists: &mut HashMap<u32, Vec<RaGameListEntry>>,
     platform: Platform,
+    rom_path: &Path,
     rom_title: &str,
 ) -> Result<Option<u32>, String> {
+    if let Some(hash_result) = crate::retro::ra_hash::hash(rom_path, platform) {
+        match hash_result {
+            Ok(hash) => {
+                if let Some(game_id) = fetch_game_id_by_hash(agent, api_key, &hash)? {
+                    return Ok(Some(game_id));
+                }
+            }
+            Err(error) => {
+                eprintln!("RetroAchievements: could not hash {}: {error}", rom_path.display());
+            }
+        }
+    }
+
     let Some(console_id) = find_console_id(consoles, platform) else {
         return Ok(None);
     };
@@ -479,6 +527,7 @@ pub fn fetch_for_game(
     username: &str,
     api_key: &str,
     platform: Platform,
+    rom_path: &Path,
     rom_title: &str,
 ) -> Result<Option<GameAchievements>, String> {
     let agent = new_agent();
@@ -490,6 +539,7 @@ pub fn fetch_for_game(
         &consoles,
         &mut game_lists,
         platform,
+        rom_path,
         rom_title,
     )?
     else {
@@ -632,6 +682,7 @@ pub struct AchievementQuery {
     pub id: String,
     pub name: String,
     pub platform: Platform,
+    pub rom_path: PathBuf,
 }
 
 fn should_skip(app_handle: &AppHandle, game_id: &str) -> bool {
@@ -701,6 +752,7 @@ pub fn spawn_fetch(
                 &consoles,
                 &mut game_lists,
                 query.platform,
+                &query.rom_path,
                 &query.name,
             )
             .and_then(|found| match found {

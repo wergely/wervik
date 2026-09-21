@@ -288,6 +288,7 @@ impl AppState {
                 id: game.id.clone(),
                 name: game.name.clone(),
                 platform: game.platform,
+                rom_path: PathBuf::from(&game.rom_path),
             })
             .collect()
     }
@@ -1889,7 +1890,13 @@ pub fn get_retro_achievements(
         }
     }
 
-    match retroachievements::fetch_for_game(&username, &api_key, rom.platform, &rom.name) {
+    match retroachievements::fetch_for_game(
+        &username,
+        &api_key,
+        rom.platform,
+        Path::new(&rom.rom_path),
+        &rom.name,
+    ) {
         Ok(Some(achievements)) => {
             let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
             state
