@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { getAchievementsOverview, getRaProfileSummary } from "../api/tauri";
 import type { AchievementsOverview, AchievementSource, Game, LibrarySnapshot, RaProfileSummary } from "../types";
 import { formatLastPlayed } from "../utils/format";
@@ -62,6 +62,35 @@ function groupByPlatform(overview: AchievementsOverview): PlatformGroup[] {
   return Array.from(groups.values()).sort((a, b) => b.totalCount - a.totalCount);
 }
 
+/** How many `OVERVIEW_CARD_WIDTH` cards fit across a card row's own width —
+ * shared by every "shortlist" row the Overview tab renders (closest to
+ * 100%, beaten-not-completed, ...), each of which needs its own ref since a
+ * `ResizeObserver` only tracks one element. */
+function useCardRowCount(active: boolean, watchLength: number): [RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [count, setCount] = useState(1);
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    const row = ref.current;
+    if (!row) return;
+
+    const updateCount = () => {
+      setCount(
+        Math.max(1, Math.floor((row.clientWidth + OVERVIEW_CARD_GAP) / (OVERVIEW_CARD_WIDTH + OVERVIEW_CARD_GAP))),
+      );
+    };
+
+    updateCount();
+    const observer = new ResizeObserver(updateCount);
+    observer.observe(row);
+    return () => observer.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, watchLength]);
+
+  return [ref, count];
+}
+
 export function AchievementsView({
   snapshot,
   onSelectGame,
@@ -72,9 +101,7 @@ export function AchievementsView({
   const [overview, setOverview] = useState<AchievementsOverview | null>(null);
   const [profile, setProfile] = useState<RaProfileSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [overviewCardCount, setOverviewCardCount] = useState(1);
   const [selectedUnlock, setSelectedUnlock] = useState<AchievementsOverview["recentUnlocks"][number] | null>(null);
-  const overviewCardRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -115,12 +142,29 @@ export function AchievementsView({
     [overview],
   );
   const inProgress = useMemo(() => startedGames.filter((game) => game.completionPercent < 100), [startedGames]);
-  const overviewGames = inProgress.slice(0, Math.min(OVERVIEW_GAMES_LIMIT, overviewCardCount));
   const platformGroups = useMemo(() => (overview ? groupByPlatform(overview) : []), [overview]);
   const completedGamesCount = useMemo(
     () => (overview ? overview.games.filter((game) => game.completionPercent === 100).length : 0),
     [overview],
   );
+  const beatenGamesCount = useMemo(
+    () => (overview ? overview.games.filter((game) => game.isBeaten).length : 0),
+    [overview],
+  );
+  // The "beaten but not 100%" cut, not every beaten game — a 100% game is
+  // already beaten by definition (RA's beaten credit is a strict subset of
+  // completion), so it's already covered by the "Games 100%" stat above.
+  // This is the shortlist that actually earns its own widget: games you
+  // finished the story of without grinding every last achievement.
+  const beatenNotCompleted = useMemo(
+    () => (overview ? overview.games.filter((game) => game.isBeaten && game.completionPercent < 100) : []),
+    [overview],
+  );
+
+  const [overviewCardRowRef, overviewCardCount] = useCardRowCount(tab === "overview", inProgress.length);
+  const overviewGames = inProgress.slice(0, Math.min(OVERVIEW_GAMES_LIMIT, overviewCardCount));
+  const [beatenCardRowRef, beatenCardCount] = useCardRowCount(tab === "overview", beatenNotCompleted.length);
+  const beatenOverviewGames = beatenNotCompleted.slice(0, Math.min(OVERVIEW_GAMES_LIMIT, beatenCardCount));
 
   const overallPercent =
     overview && overview.totalPossible > 0
@@ -128,25 +172,8 @@ export function AchievementsView({
       : null;
   const completedGamesPercent =
     overview && overview.games.length > 0 ? Math.round((completedGamesCount / overview.games.length) * 100) : null;
-
-  useLayoutEffect(() => {
-    if (tab !== "overview") return;
-    const row = overviewCardRowRef.current;
-    if (!row) return;
-
-    const updateCardCount = () => {
-      const count = Math.max(
-        1,
-        Math.floor((row.clientWidth + OVERVIEW_CARD_GAP) / (OVERVIEW_CARD_WIDTH + OVERVIEW_CARD_GAP)),
-      );
-      setOverviewCardCount(count);
-    };
-
-    updateCardCount();
-    const observer = new ResizeObserver(updateCardCount);
-    observer.observe(row);
-    return () => observer.disconnect();
-  }, [inProgress.length, tab]);
+  const beatenGamesPercent =
+    overview && overview.games.length > 0 ? Math.round((beatenGamesCount / overview.games.length) * 100) : null;
 
   function openUnlock(unlock: AchievementsOverview["recentUnlocks"][number]) {
     setSelectedUnlock(unlock);
@@ -196,6 +223,14 @@ export function AchievementsView({
               value={`${completedGamesCount} of ${overview.games.length} games`}
               percent={completedGamesPercent}
               barPercent={completedGamesPercent}
+            />
+            <StatCard
+              icon="🏁"
+              accent="cyan"
+              label="Games Beaten"
+              value={`${beatenGamesCount} of ${overview.games.length} games`}
+              percent={beatenGamesPercent}
+              barPercent={beatenGamesPercent}
             />
             {overview.totalPointsPossible > 0 && (
               <StatCard
@@ -249,6 +284,21 @@ export function AchievementsView({
                     <h2 className={styles.sectionTitle}>Closest to 100%</h2>
                     <div ref={overviewCardRowRef} className={styles.cardRow}>
                       {overviewGames.map((entry) => (
+                        <AchievementGameCard
+                          key={`${entry.source}-${entry.gameId}`}
+                          entry={entry}
+                          coverPath={gamesById.get(entry.gameId)?.coverPath}
+                          onSelect={() => selectGame(entry.gameId)}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+                {beatenNotCompleted.length > 0 && (
+                  <section className={styles.section}>
+                    <h2 className={styles.sectionTitle}>Beaten, not yet 100%</h2>
+                    <div ref={beatenCardRowRef} className={styles.cardRow}>
+                      {beatenOverviewGames.map((entry) => (
                         <AchievementGameCard
                           key={`${entry.source}-${entry.gameId}`}
                           entry={entry}

@@ -2003,6 +2003,9 @@ pub struct GameAchievementSummary {
     pub points_earned: u32,
     pub points_total: u32,
     pub completion_percent: u8,
+    /// RA's "beaten game" credit (see `GameAchievements::is_beaten`) —
+    /// always `false` for Steam, which has no equivalent concept.
+    pub is_beaten: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2075,6 +2078,7 @@ pub fn get_achievements_overview(state: State<AppStateHandle>) -> AchievementsOv
             points_earned: achievements.points_earned,
             points_total: achievements.points_total,
             completion_percent: achievements.completion_percent().unwrap_or(0),
+            is_beaten: achievements.is_beaten(),
         });
         for achievement in &achievements.achievements {
             if let Some(unlocked_at) = achievement.unlocked_at {
@@ -2116,6 +2120,7 @@ pub fn get_achievements_overview(state: State<AppStateHandle>) -> AchievementsOv
                 points_earned: 0,
                 points_total: 0,
                 completion_percent: achievements.completion_percent().unwrap_or(0),
+                is_beaten: false,
             });
             for achievement in &achievements.achievements {
                 if let Some(unlocked_at) = achievement.unlocked_at {

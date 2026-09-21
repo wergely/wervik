@@ -34,6 +34,11 @@ export function AchievementGameCard({ entry, coverPath, onSelect }: AchievementG
           </div>
           <div className={styles.percentRow}>
             <span className={styles.percent}>{entry.completionPercent}%</span>
+            {entry.isBeaten && (
+              <span className={styles.beatenBadge} title="Beaten: every progression achievement unlocked">
+                🏁 Beaten
+              </span>
+            )}
           </div>
           <div className={styles.progressTrack}>
             <div className={styles.progressFill} style={{ width: `${entry.completionPercent}%` }} />

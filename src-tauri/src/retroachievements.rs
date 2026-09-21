@@ -96,6 +96,36 @@ impl GameAchievements {
         (self.total_count > 0)
             .then(|| (self.earned_count as f64 / self.total_count as f64 * 100.0).round() as u8)
     }
+
+    /// RA's "beaten game" credit: every `"progression"` achievement
+    /// unlocked, and — when the set has any `"win_condition"` achievements
+    /// at all — at least one of those unlocked too. `false` when the set has
+    /// no progression achievements (most older/smaller achievement sets
+    /// aren't tagged this way at all, so there's no basis to call them
+    /// "beaten" either way) — same rule `beatenGameCredit` in
+    /// `src/utils/achievements.ts` uses to render the "Beaten game credit"
+    /// section, just reduced to a single pass/fail instead of per-category
+    /// progress.
+    pub fn is_beaten(&self) -> bool {
+        let mut has_progression = false;
+        let mut progression_complete = true;
+        let mut has_win_condition = false;
+        let mut win_condition_unlocked = false;
+        for achievement in &self.achievements {
+            match achievement.achievement_type.as_deref() {
+                Some("progression") => {
+                    has_progression = true;
+                    progression_complete &= achievement.unlocked;
+                }
+                Some("win_condition") => {
+                    has_win_condition = true;
+                    win_condition_unlocked |= achievement.unlocked;
+                }
+                _ => {}
+            }
+        }
+        has_progression && progression_complete && (!has_win_condition || win_condition_unlocked)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +240,31 @@ fn new_agent() -> Agent {
         .timeout_global(Some(Duration::from_secs(12)))
         .build()
         .into()
+}
+
+/// Retries `request` when RA rate-limits it (HTTP 429), backing off further
+/// each time. The background sweep now makes up to two RA requests per ROM
+/// (a hash lookup, then a progress fetch — see `resolve_game_id`) instead of
+/// the sub-one-per-ROM average title matching needed, which is enough to
+/// trip RA's rate limit partway through a large library; without a retry,
+/// hitting the limit once cascades into every remaining game in that sweep
+/// failing outright. RA doesn't document a `Retry-After` header to respect,
+/// so this just backs off a fixed schedule instead.
+fn with_rate_limit_retry<T>(
+    mut request: impl FnMut() -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    const MAX_ATTEMPTS: u32 = 4;
+    let mut backoff = Duration::from_secs(1);
+    for attempt in 1..=MAX_ATTEMPTS {
+        match request() {
+            Err(ureq::Error::StatusCode(429)) if attempt < MAX_ATTEMPTS => {
+                std::thread::sleep(backoff);
+                backoff *= 2;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the last attempt always returns")
 }
 
 /// Parses RetroAchievements' `DateEarned`/`DateEarnedHardcore` timestamp
@@ -412,7 +467,7 @@ struct RaGameIdResponse {
 /// the same way in case that ever changes).
 fn fetch_game_id_by_hash(agent: &Agent, api_key: &str, hash: &str) -> Result<Option<u32>, String> {
     let url = format!("https://retroachievements.org/API/API_GetGameID.php?y={api_key}&m={hash}");
-    let mut response = match agent.get(&url).call() {
+    let mut response = match with_rate_limit_retry(|| agent.get(&url).call()) {
         Ok(response) => response,
         Err(ureq::Error::StatusCode(404)) => return Ok(None),
         Err(error) => return Err(format!("RetroAchievements request failed: {error}")),
@@ -433,9 +488,7 @@ fn fetch_progress(
     let url = format!(
         "https://retroachievements.org/API/API_GetGameInfoAndUserProgress.php?y={api_key}&u={username}&g={game_id}"
     );
-    let response = agent
-        .get(&url)
-        .call()
+    let response = with_rate_limit_retry(|| agent.get(&url).call())
         .map_err(|error| format!("RetroAchievements request failed: {error}"))?
         .body_mut()
         .read_json::<RaGameProgressResponse>()
@@ -702,8 +755,11 @@ fn should_skip(app_handle: &AppHandle, game_id: &str) -> bool {
 
 /// Kept well below what a single interactive lookup would use, since this
 /// runs unattended over a whole library rather than one game a user is
-/// actively waiting on.
-const SWEEP_REQUEST_DELAY: Duration = Duration::from_millis(400);
+/// actively waiting on. Widened from 400ms once hash-based resolution
+/// started making up to two RA requests per ROM instead of one (see
+/// `with_rate_limit_retry`), which was tripping RA's rate limit on large
+/// libraries.
+const SWEEP_REQUEST_DELAY: Duration = Duration::from_millis(800);
 
 /// Populates the achievements cache for every ROM in the background, so
 /// the Library grid can show a completion badge without the user having
@@ -915,5 +971,77 @@ mod tests {
     fn rejects_a_malformed_ra_date() {
         assert_eq!(parse_ra_date("not-a-date"), None);
         assert_eq!(parse_ra_date(""), None);
+    }
+
+    fn achievement(achievement_type: Option<&str>, unlocked: bool) -> Achievement {
+        Achievement {
+            id: 1,
+            title: String::new(),
+            description: String::new(),
+            points: 0,
+            badge_url: String::new(),
+            unlocked,
+            unlocked_hardcore: false,
+            unlocked_at: None,
+            achievement_type: achievement_type.map(str::to_string),
+        }
+    }
+
+    fn game_achievements(achievements: Vec<Achievement>) -> GameAchievements {
+        GameAchievements {
+            game_title: String::new(),
+            console_name: String::new(),
+            icon_url: None,
+            earned_count: achievements.iter().filter(|a| a.unlocked).count(),
+            total_count: achievements.len(),
+            points_earned: 0,
+            points_total: 0,
+            achievements,
+        }
+    }
+
+    #[test]
+    fn not_beaten_without_any_progression_achievements() {
+        let achievements = game_achievements(vec![achievement(None, true), achievement(None, true)]);
+        assert!(!achievements.is_beaten());
+    }
+
+    #[test]
+    fn not_beaten_with_incomplete_progression() {
+        let achievements = game_achievements(vec![
+            achievement(Some("progression"), true),
+            achievement(Some("progression"), false),
+        ]);
+        assert!(!achievements.is_beaten());
+    }
+
+    #[test]
+    fn beaten_with_complete_progression_and_no_win_condition_achievements() {
+        let achievements = game_achievements(vec![
+            achievement(Some("progression"), true),
+            achievement(Some("progression"), true),
+            achievement(None, false),
+        ]);
+        assert!(achievements.is_beaten());
+    }
+
+    #[test]
+    fn not_beaten_with_complete_progression_but_no_win_condition_unlocked() {
+        let achievements = game_achievements(vec![
+            achievement(Some("progression"), true),
+            achievement(Some("win_condition"), false),
+        ]);
+        assert!(!achievements.is_beaten());
+    }
+
+    #[test]
+    fn beaten_with_complete_progression_and_any_win_condition_unlocked() {
+        let achievements = game_achievements(vec![
+            achievement(Some("progression"), true),
+            achievement(Some("progression"), true),
+            achievement(Some("win_condition"), false),
+            achievement(Some("win_condition"), true),
+        ]);
+        assert!(achievements.is_beaten());
     }
 }

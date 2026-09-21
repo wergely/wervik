@@ -147,6 +147,8 @@ export interface GameAchievementSummary {
   pointsEarned: number;
   pointsTotal: number;
   completionPercent: number;
+  /** RA's "beaten game" credit — always `false` for Steam. */
+  isBeaten: boolean;
 }
 
 export interface RecentUnlock {

@@ -82,6 +82,22 @@
 .percentRow {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.beatenBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: rgba(54, 217, 255, 0.2);
+  color: var(--cyan);
+  font-size: 0.66rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .percent {
