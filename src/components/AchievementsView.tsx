@@ -106,17 +106,30 @@ export function AchievementsView({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([getAchievementsOverview(), getRaProfileSummary().catch(() => null)])
-      .then(([overviewValue, profileValue]) => {
-        if (cancelled) return;
-        setOverview(overviewValue);
-        setProfile(profileValue);
+    // `getAchievementsOverview` alone gates the spinner — it's a local cache
+    // read (see `get_achievements_overview`'s own doc comment), so it should
+    // resolve near-instantly. `getRaProfileSummary` is a live network call to
+    // RA on every mount of this page; it used to be awaited in the same
+    // `Promise.all`, so a slow/rate-limited RA response held the *entire*
+    // page on the loading spinner even though the achievement data itself
+    // was already sitting in the local cache. It now fills in the "RA Site
+    // Rank" card whenever it resolves instead, independently.
+    getAchievementsOverview()
+      .then((overviewValue) => {
+        if (!cancelled) setOverview(overviewValue);
       })
       .catch(() => {
         if (!cancelled) setOverview(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    getRaProfileSummary()
+      .then((profileValue) => {
+        if (!cancelled) setProfile(profileValue);
+      })
+      .catch(() => {
+        if (!cancelled) setProfile(null);
       });
     return () => {
       cancelled = true;

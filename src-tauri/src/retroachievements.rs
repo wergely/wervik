@@ -249,12 +249,15 @@ fn new_agent() -> Agent {
 /// trip RA's rate limit partway through a large library; without a retry,
 /// hitting the limit once cascades into every remaining game in that sweep
 /// failing outright. RA doesn't document a `Retry-After` header to respect,
-/// so this just backs off a fixed schedule instead.
+/// so this just backs off a fixed schedule instead — kept short since this
+/// same helper also guards the interactive per-game fetch a user is
+/// actively waiting on (see `commands::get_retro_achievements`), where a
+/// long retry chain would just look like the page hanging.
 fn with_rate_limit_retry<T>(
     mut request: impl FnMut() -> Result<T, ureq::Error>,
 ) -> Result<T, ureq::Error> {
-    const MAX_ATTEMPTS: u32 = 4;
-    let mut backoff = Duration::from_secs(1);
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut backoff = Duration::from_millis(500);
     for attempt in 1..=MAX_ATTEMPTS {
         match request() {
             Err(ureq::Error::StatusCode(429)) if attempt < MAX_ATTEMPTS => {
