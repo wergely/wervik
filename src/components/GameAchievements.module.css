@@ -401,8 +401,8 @@
 }
 
 .creditRows {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 6px;
 }
 
@@ -411,6 +411,7 @@
   align-items: center;
   gap: 10px;
   width: 100%;
+  min-width: 0;
   padding: 8px 10px;
   text-align: left;
   color: var(--text-secondary);
