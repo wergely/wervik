@@ -109,3 +109,8 @@ button {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
+
+[data-editing] {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}

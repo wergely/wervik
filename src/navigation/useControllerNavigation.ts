@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { playMoveSound } from "../utils/sfx";
 import { findNearestFocusTarget, findNextFocusTarget, type Direction } from "./spatialNav";
-import { adjustValue, cycleSelect } from "./valueControls";
+import { cycleSelect, isSteppable, stepValue } from "./valueControls";
 
 const STICK_DEADZONE = 0.5;
 const REPEAT_DELAY_MS = 320;
@@ -35,6 +35,14 @@ const KEY_TO_DIRECTION: Record<string, Direction> = {
 };
 
 let lastFocusRect: DOMRect | null = null;
+// A slider or number field only takes left/right after A puts it in edit mode.
+let editing: HTMLInputElement | null = null;
+
+function setEditing(el: HTMLInputElement | null) {
+  editing?.removeAttribute("data-editing");
+  editing = el;
+  el?.setAttribute("data-editing", "");
+}
 
 function focusIsLost(): boolean {
   const el = document.activeElement;
@@ -94,6 +102,7 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
 
   useEffect(() => {
     function handleFocusIn(e: FocusEvent) {
+      if (editing && e.target !== editing) setEditing(null);
       if (e.target instanceof HTMLElement && e.target.matches("[data-nav-item]")) {
         lastFocusRect = e.target.getBoundingClientRect();
       }
@@ -121,7 +130,6 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
           return;
         }
         e.preventDefault();
-        if (active instanceof HTMLSelectElement && adjustValue(active, direction)) return;
         move(direction, scopeRef.current ?? document);
         return;
       }
@@ -148,6 +156,8 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
       const el = document.activeElement;
       if (el instanceof HTMLSelectElement) {
         if (cycleSelect(el)) playMoveSound();
+      } else if (isSteppable(el)) {
+        setEditing(editing === el ? null : el);
       } else if (el instanceof HTMLElement) {
         el.click();
       }
@@ -155,6 +165,10 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
 
     // A synthetic Escape lets popovers that close on Escape handle B before onBack.
     function pressB() {
+      if (editing) {
+        setEditing(null);
+        return;
+      }
       const target = document.activeElement ?? document.body;
       target.dispatchEvent(
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
@@ -162,10 +176,11 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
     }
 
     function step(direction: Direction, scope: ParentNode) {
-      if (adjustValue(document.activeElement, direction)) {
-        playMoveSound();
+      if (editing && editing === document.activeElement && (direction === "left" || direction === "right")) {
+        if (stepValue(editing, direction)) playMoveSound();
         return;
       }
+      setEditing(null);
       move(direction, scope);
     }
 

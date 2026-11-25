@@ -59,6 +59,7 @@ export function AchievementDetailsModal({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
+      event.stopPropagation();
       close();
     };
     document.addEventListener("keydown", handleKeyDown);

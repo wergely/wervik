@@ -28,7 +28,6 @@ import { playConfirmSound, playSelectSound } from "./utils/sfx";
 type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements" | "gameAchievements";
 
 const NAV_ITEM = "[data-nav-item]";
-const NESTED_VIEWS: View[] = ["detail", "gameAchievements", "platformDetail"];
 
 interface FocusMemory {
   key: string | null;
@@ -45,10 +44,10 @@ function captureFocus(): FocusMemory | null {
 function restoreFocus(memory: FocusMemory): boolean {
   const items = Array.from(document.querySelectorAll<HTMLElement>(NAV_ITEM));
   // The same game can show up in several rows, so prefer the copy nearest its old position.
-  const keyed = memory.key ? items.filter((el) => el.dataset.navKey === memory.key) : [];
-  const target =
-    keyed.sort((a, b) => Math.abs(items.indexOf(a) - memory.index) - Math.abs(items.indexOf(b) - memory.index))[0] ??
-    items[memory.index];
+  const distance = (el: HTMLElement) => Math.abs(items.indexOf(el) - memory.index);
+  const target = memory.key
+    ? items.filter((el) => el.dataset.navKey === memory.key).sort((a, b) => distance(a) - distance(b))[0]
+    : items[memory.index];
   target?.focus();
   return Boolean(target);
 }
@@ -128,7 +127,7 @@ export default function App() {
   }
 
   function openSection(next: View) {
-    for (const nested of NESTED_VIEWS) focusMemory.current.delete(nested);
+    focusMemory.current.clear();
     setView(next);
   }
 
