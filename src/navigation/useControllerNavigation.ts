@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 import { playMoveSound } from "../utils/sfx";
-import { findNearestFocusTarget, findNextFocusTarget, type Direction } from "./spatialNav";
-import { cycleSelect, isSteppable, stepValue } from "./valueControls";
+import {
+  findNearestFocusTarget,
+  findNextFocusTarget,
+  NAV_ITEM_SELECTOR,
+  type Direction,
+} from "./spatialNav";
+import { editingControl, endEditing, isEditable, startEditing, stepEditing } from "./valueControls";
 
 const STICK_DEADZONE = 0.5;
 const REPEAT_DELAY_MS = 320;
@@ -34,14 +39,17 @@ const KEY_TO_DIRECTION: Record<string, Direction> = {
   ArrowRight: "right",
 };
 
+let lastFocused: HTMLElement | null = null;
 let lastFocusRect: DOMRect | null = null;
-// A slider or number field only takes left/right after A puts it in edit mode.
-let editing: HTMLInputElement | null = null;
+let lastPointerItem: HTMLElement | null = null;
 
-function setEditing(el: HTMLInputElement | null) {
-  editing?.removeAttribute("data-editing");
-  editing = el;
-  el?.setAttribute("data-editing", "");
+// WebKit doesn't focus buttons on click, so for mouse input use the clicked item.
+export function currentNavItem(): HTMLElement | null {
+  if (document.documentElement.dataset.input === "pointer" && lastPointerItem?.isConnected) {
+    return lastPointerItem;
+  }
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active.matches(NAV_ITEM_SELECTOR) ? active : null;
 }
 
 function focusIsLost(): boolean {
@@ -102,18 +110,26 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
 
   useEffect(() => {
     function handleFocusIn(e: FocusEvent) {
-      if (editing && e.target !== editing) setEditing(null);
-      if (e.target instanceof HTMLElement && e.target.matches("[data-nav-item]")) {
+      if (editingControl() && e.target !== editingControl()) endEditing("commit");
+      if (e.target instanceof HTMLElement && e.target.matches(NAV_ITEM_SELECTOR)) {
+        lastFocused = e.target;
         lastFocusRect = e.target.getBoundingClientRect();
       }
     }
-    function handlePointerDown() {
+    // Keeps the recovery position in step with scrolling while the item still exists.
+    function handleScroll() {
+      if (lastFocused?.isConnected) lastFocusRect = lastFocused.getBoundingClientRect();
+    }
+    function handlePointerDown(e: PointerEvent) {
       setInputMode("pointer");
+      lastPointerItem = e.target instanceof Element ? e.target.closest<HTMLElement>(NAV_ITEM_SELECTOR) : null;
     }
     document.addEventListener("focusin", handleFocusIn);
+    document.addEventListener("scroll", handleScroll, { capture: true, passive: true });
     window.addEventListener("pointerdown", handlePointerDown, true);
     return () => {
       document.removeEventListener("focusin", handleFocusIn);
+      document.removeEventListener("scroll", handleScroll, { capture: true });
       window.removeEventListener("pointerdown", handlePointerDown, true);
     };
   }, []);
@@ -149,15 +165,15 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
     let rafId: number | null = null;
     let nextRepeatAt = 0;
     let activeDirection: Direction | null = null;
+    let repeats = 0;
     let prevPressed: boolean[] = [];
 
     function pressA(scope: ParentNode) {
       if (recoverFocus(scope)) return;
       const el = document.activeElement;
-      if (el instanceof HTMLSelectElement) {
-        if (cycleSelect(el)) playMoveSound();
-      } else if (isSteppable(el)) {
-        setEditing(editing === el ? null : el);
+      if (isEditable(el)) {
+        if (editingControl() === el) endEditing("commit");
+        else startEditing(el);
       } else if (el instanceof HTMLElement) {
         el.click();
       }
@@ -165,8 +181,8 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
 
     // A synthetic Escape lets popovers that close on Escape handle B before onBack.
     function pressB() {
-      if (editing) {
-        setEditing(null);
+      if (editingControl()) {
+        endEditing("cancel");
         return;
       }
       const target = document.activeElement ?? document.body;
@@ -176,11 +192,12 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
     }
 
     function step(direction: Direction, scope: ParentNode) {
+      const editing = editingControl();
       if (editing && editing === document.activeElement && (direction === "left" || direction === "right")) {
-        if (stepValue(editing, direction)) playMoveSound();
+        if (stepEditing(direction, repeats)) playMoveSound();
         return;
       }
-      setEditing(null);
+      endEditing("commit");
       move(direction, scope);
     }
 
@@ -211,9 +228,11 @@ export function useControllerNavigation({ onBack, disabled, scope }: Options = {
       if (direction) {
         if (direction !== activeDirection) {
           activeDirection = direction;
+          repeats = 0;
           step(direction, activeScope);
           nextRepeatAt = now + REPEAT_DELAY_MS;
         } else if (now >= nextRepeatAt) {
+          repeats += 1;
           step(direction, activeScope);
           nextRepeatAt = now + REPEAT_RATE_MS;
         }

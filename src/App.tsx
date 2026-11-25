@@ -21,35 +21,39 @@ import { Welcome } from "./components/Welcome";
 import { useChiptunePlayer } from "./hooks/useChiptunePlayer";
 import { useLibrary } from "./hooks/useLibrary";
 import { useSettings } from "./hooks/useSettings";
-import { useControllerNavigation } from "./navigation/useControllerNavigation";
+import { NAV_ITEM_SELECTOR } from "./navigation/spatialNav";
+import { currentNavItem, useControllerNavigation } from "./navigation/useControllerNavigation";
 import type { Game } from "./types";
 import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
 type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements" | "gameAchievements";
 
-const NAV_ITEM = "[data-nav-item]";
-
 interface FocusMemory {
-  key: string | null;
+  identity: string;
   index: number;
 }
 
+// Buttons without a data-nav-key are matched by their label, since async content can shift indices.
+function navIdentity(el: HTMLElement): string {
+  return el.dataset.navKey ?? `${el.tagName}:${el.getAttribute("aria-label") ?? el.textContent?.trim() ?? ""}`;
+}
+
 function captureFocus(): FocusMemory | null {
-  const active = document.activeElement;
-  if (!(active instanceof HTMLElement) || !active.matches(NAV_ITEM)) return null;
-  const index = Array.from(document.querySelectorAll(NAV_ITEM)).indexOf(active);
-  return { key: active.dataset.navKey ?? null, index };
+  const item = currentNavItem();
+  if (!item) return null;
+  const index = Array.from(document.querySelectorAll(NAV_ITEM_SELECTOR)).indexOf(item);
+  return { identity: navIdentity(item), index };
 }
 
 function restoreFocus(memory: FocusMemory): boolean {
-  const items = Array.from(document.querySelectorAll<HTMLElement>(NAV_ITEM));
+  const items = Array.from(document.querySelectorAll<HTMLElement>(NAV_ITEM_SELECTOR));
   // The same game can show up in several rows, so prefer the copy nearest its old position.
   const distance = (el: HTMLElement) => Math.abs(items.indexOf(el) - memory.index);
-  const target = memory.key
-    ? items.filter((el) => el.dataset.navKey === memory.key).sort((a, b) => distance(a) - distance(b))[0]
-    : items[memory.index];
+  const target = items
+    .filter((el) => navIdentity(el) === memory.identity)
+    .sort((a, b) => distance(a) - distance(b))[0];
   target?.focus();
-  return Boolean(target);
+  return target !== undefined && document.activeElement === target;
 }
 
 export default function App() {
@@ -230,14 +234,15 @@ export default function App() {
         document.activeElement === document.body ||
         document.activeElement === null
       ) {
-        document.querySelector<HTMLElement>(NAV_ITEM)?.focus();
+        document.querySelector<HTMLElement>(NAV_ITEM_SELECTOR)?.focus();
       }
     });
     return () => cancelAnimationFrame(id);
   }, [view, status, showingWelcome]);
 
   useControllerNavigation({
-    onBack: backOverride ?? (view === "home" ? undefined : handleBack),
+    // The Welcome overlay hides the current view, so B mustn't navigate it.
+    onBack: showingWelcome ? undefined : backOverride ?? (view === "home" ? undefined : handleBack),
     scope: navScope,
   });
 

@@ -9,6 +9,7 @@ import { RomDirectoriesEditor } from "./RomDirectoriesEditor";
 import settingsStyles from "./Settings.module.css";
 import { Spinner } from "./Spinner";
 import styles from "./Welcome.module.css";
+import { NAV_ITEM_SELECTOR } from "../navigation/spatialNav";
 
 interface WelcomeProps {
   settings: SettingsType | null;
@@ -24,7 +25,7 @@ export function Welcome({ settings, onUpdateSettings, onLibraryChange, onDone }:
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    requestAnimationFrame(() => cardRef.current?.querySelector<HTMLElement>("[data-nav-item]")?.focus());
+    requestAnimationFrame(() => cardRef.current?.querySelector<HTMLElement>(NAV_ITEM_SELECTOR)?.focus());
   }, [step]);
 
   return (

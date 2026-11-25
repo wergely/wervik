@@ -29,6 +29,7 @@ import { SourceBadge } from "./SourceBadge";
 import { Spinner } from "./Spinner";
 import { Switch } from "./Switch";
 import styles from "./GameDetail.module.css";
+import { NAV_ITEM_SELECTOR } from "../navigation/spatialNav";
 
 interface GameDetailProps {
   game: Game;
@@ -224,7 +225,7 @@ export function GameDetail({
     // it instead of invoking it as a state updater and closing the preview.
     registerBackHandler(() => closeLightbox);
     registerNavScope(lightboxRef.current);
-    requestAnimationFrame(() => lightboxRef.current?.querySelector<HTMLElement>("[data-nav-item]")?.focus());
+    requestAnimationFrame(() => lightboxRef.current?.querySelector<HTMLElement>(NAV_ITEM_SELECTOR)?.focus());
 
     const lightbox = lightboxRef.current;
     if (!lightbox) return;
