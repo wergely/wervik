@@ -45,7 +45,7 @@
   background: var(--surface);
 }
 
-.sidebarButton:focus-visible {
+.sidebarButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -166,7 +166,7 @@
   justify-content: center;
 }
 
-.scaleButton:focus-visible {
+.scaleButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -195,11 +195,11 @@
 }
 
 .rescanButton:hover,
-.rescanButton:focus-visible {
+.rescanButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   transform: scale(1.04);
 }
 
-.rescanButton:focus-visible {
+.rescanButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -248,12 +248,12 @@
   font-size: 0.85rem;
 }
 
-.providerSelect:focus-visible {
+.providerSelect:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
 }
 
-.romPlatformSelect:focus-visible {
+.romPlatformSelect:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
 }
@@ -279,12 +279,12 @@
 }
 
 .romRemoveButton:hover,
-.romRemoveButton:focus-visible {
+.romRemoveButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.romRemoveButton:focus-visible {
+.romRemoveButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -298,7 +298,7 @@
   font-size: 0.85rem;
 }
 
-.textInput:focus-visible {
+.textInput:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -324,12 +324,12 @@
 }
 
 .revealButton:hover,
-.revealButton:focus-visible {
+.revealButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.revealButton:focus-visible {
+.revealButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

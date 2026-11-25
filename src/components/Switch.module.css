@@ -29,6 +29,6 @@
   transform: translateX(20px);
 }
 
-.switch:focus-visible {
+.switch:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }

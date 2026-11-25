@@ -15,6 +15,7 @@ export function PlatformCard({ platform, onSelect }: PlatformCardProps) {
       type="button"
       className={styles.card}
       data-nav-item
+      data-nav-key={platform.key}
       onClick={() => onSelect(platform)}
       aria-label={platform.displayName}
     >

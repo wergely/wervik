@@ -23,6 +23,7 @@ export function GameCard({ game, size = "md", onSelect }: GameCardProps) {
       type="button"
       className={`${styles.card} ${size === "lg" ? styles.lg : ""}`}
       data-nav-item
+      data-nav-key={game.id}
       onClick={() => onSelect(game)}
       aria-label={`${game.name}${game.isInstalled ? "" : " — Not installed"}`}
     >

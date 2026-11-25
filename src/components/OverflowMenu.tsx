@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import styles from "./OverflowMenu.module.css";
+import { NAV_ITEM_SELECTOR } from "../navigation/spatialNav";
 
 interface OverflowMenuProps {
   open: boolean;
@@ -32,7 +33,7 @@ export function OverflowMenu({
     registerNavScope(menuRef.current);
     registerBackHandler(() => () => onCloseRef.current());
 
-    const firstItem = menuRef.current?.querySelector<HTMLElement>("[data-nav-item]");
+    const firstItem = menuRef.current?.querySelector<HTMLElement>(NAV_ITEM_SELECTOR);
     firstItem?.focus();
 
     function handlePointerDown(e: PointerEvent) {

@@ -141,13 +141,13 @@
 }
 
 .reactionButton:hover,
-.reactionButton:focus-visible {
+.reactionButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
   background: rgba(17, 20, 28, 0.94);
   transform: scale(1.08);
 }
 
-.reactionButton:focus-visible {
+.reactionButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -162,16 +162,16 @@
 }
 
 .card:hover .art,
-.card:focus-visible .art {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) .art {
   border-color: var(--violet);
 }
 
 .card:hover,
-.card:focus-visible {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) {
   transform: scale(1.045);
 }
 
-.card:focus-visible .art {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) .art {
   box-shadow: var(--shadow-focus);
 }
 
@@ -197,7 +197,7 @@
 }
 
 .infoButton:hover,
-.infoButton:focus-visible {
+.infoButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--cyan);
   color: var(--cyan);
 }

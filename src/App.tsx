@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -21,11 +21,40 @@ import { Welcome } from "./components/Welcome";
 import { useChiptunePlayer } from "./hooks/useChiptunePlayer";
 import { useLibrary } from "./hooks/useLibrary";
 import { useSettings } from "./hooks/useSettings";
-import { useControllerNavigation } from "./navigation/useControllerNavigation";
+import { NAV_ITEM_SELECTOR } from "./navigation/spatialNav";
+import { currentNavItem, useControllerNavigation } from "./navigation/useControllerNavigation";
 import type { Game } from "./types";
 import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
 type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements" | "gameAchievements";
+
+interface FocusMemory {
+  identity: string;
+  index: number;
+}
+
+// Buttons without a data-nav-key are matched by their label, since async content can shift indices.
+function navIdentity(el: HTMLElement): string {
+  return el.dataset.navKey ?? `${el.tagName}:${el.getAttribute("aria-label") ?? el.textContent?.trim() ?? ""}`;
+}
+
+function captureFocus(): FocusMemory | null {
+  const item = currentNavItem();
+  if (!item) return null;
+  const index = Array.from(document.querySelectorAll(NAV_ITEM_SELECTOR)).indexOf(item);
+  return { identity: navIdentity(item), index };
+}
+
+function restoreFocus(memory: FocusMemory): boolean {
+  const items = Array.from(document.querySelectorAll<HTMLElement>(NAV_ITEM_SELECTOR));
+  // The same game can show up in several rows, so prefer the copy nearest its old position.
+  const distance = (el: HTMLElement) => Math.abs(items.indexOf(el) - memory.index);
+  const target = items
+    .filter((el) => navIdentity(el) === memory.identity)
+    .sort((a, b) => distance(a) - distance(b))[0];
+  target?.focus();
+  return target !== undefined && document.activeElement === target;
+}
 
 export default function App() {
   const {
@@ -41,6 +70,7 @@ export default function App() {
   } = useLibrary();
   const { settings, update: updateSettings } = useSettings();
   const [view, setView] = useState<View>("home");
+  const focusMemory = useRef(new Map<View, FocusMemory>());
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [selectedPlatformKey, setSelectedPlatformKey] = useState<string | null>(null);
   // Where "Back" from the full achievements page should land — it's reachable
@@ -93,12 +123,24 @@ export default function App() {
     settings?.musicVolume ?? 0.35,
   );
 
+  // Going back to this view later puts focus back on whatever opened the next one.
+  function openView(next: View) {
+    const memory = captureFocus();
+    if (memory) focusMemory.current.set(view, memory);
+    setView(next);
+  }
+
+  function openSection(next: View) {
+    focusMemory.current.clear();
+    setView(next);
+  }
+
   const selectedGame = snapshot?.games.find((g) => g.id === selectedGameId) ?? null;
 
   function handleSelectGame(game: Game) {
     playSelectSound();
     setSelectedGameId(game.id);
-    setView("detail");
+    openView("detail");
     // Retro covers come from a background fetch that can be working
     // through a library thousands of ROMs deep (see `useArtworkProgress`);
     // a game the user is actually looking at right now shouldn't have to
@@ -113,12 +155,12 @@ export default function App() {
     playSelectSound();
     setSelectedGameId(game.id);
     setAchievementsOrigin(origin);
-    setView("gameAchievements");
+    openView("gameAchievements");
   }
 
   function handleSelectPlatform(platform: { key: string }) {
     setSelectedPlatformKey(platform.key);
-    setView("platformDetail");
+    openView("platformDetail");
   }
 
   async function handlePlay(game: Game, variantId?: string | null) {
@@ -182,20 +224,25 @@ export default function App() {
 
   // Seed keyboard/controller focus whenever the visible view changes, so
   // the first arrow press or D-pad nudge has somewhere to move from.
+  const showingWelcome = Boolean(settings && (!settings.onboardingCompleted || welcomeForced));
   useEffect(() => {
     const id = requestAnimationFrame(() => {
+      const memory = focusMemory.current.get(view);
+      focusMemory.current.delete(view);
+      if (memory && restoreFocus(memory)) return;
       if (
         document.activeElement === document.body ||
         document.activeElement === null
       ) {
-        document.querySelector<HTMLElement>("[data-nav-item]")?.focus();
+        document.querySelector<HTMLElement>(NAV_ITEM_SELECTOR)?.focus();
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, status]);
+  }, [view, status, showingWelcome]);
 
   useControllerNavigation({
-    onBack: backOverride ?? (view === "home" ? undefined : handleBack),
+    // The Welcome overlay hides the current view, so B mustn't navigate it.
+    onBack: showingWelcome ? undefined : backOverride ?? (view === "home" ? undefined : handleBack),
     scope: navScope,
   });
 
@@ -237,6 +284,7 @@ export default function App() {
           <p>Wervik couldn't read your Steam library. Try rescanning.</p>
           <button
             type="button"
+            data-nav-item
             onClick={rescan}
             style={{
               background: "var(--gradient)",
@@ -254,7 +302,7 @@ export default function App() {
     );
   }
 
-  if (settings && (!settings.onboardingCompleted || welcomeForced)) {
+  if (showingWelcome && settings) {
     return (
       <div style={{ zoom: settings.uiScale, height: "100%" }}>
         <Welcome
@@ -283,10 +331,10 @@ export default function App() {
     <div style={{ zoom: settings?.uiScale ?? 1, height: "100%", display: "flex", flexDirection: "column" }}>
       <Header
         activeView={headerView}
-        onGoHome={() => setView("home")}
-        onOpenSettings={() => setView("settings")}
-        onOpenPlatforms={() => setView("platforms")}
-        onOpenAchievements={() => setView("achievements")}
+        onGoHome={() => openSection("home")}
+        onOpenSettings={() => openSection("settings")}
+        onOpenPlatforms={() => openSection("platforms")}
+        onOpenAchievements={() => openSection("achievements")}
         musicEnabled={Boolean(settings?.musicEnabled)}
         onToggleMusic={() => updateSettings({ musicEnabled: !settings?.musicEnabled })}
         onSkipTrack={musicControls.nextTrack}

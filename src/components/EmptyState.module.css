@@ -47,7 +47,7 @@
 }
 
 .action:hover,
-.action:focus-visible {
+.action:is(:focus-visible, [data-input="gamepad"] :focus) {
   transform: scale(1.04);
 }
 
@@ -56,6 +56,6 @@
   border-top-color: #090b10;
 }
 
-.action:focus-visible {
+.action:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }

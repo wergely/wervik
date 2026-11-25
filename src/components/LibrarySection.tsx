@@ -287,7 +287,15 @@ export function LibrarySection({ games, onSelect, settings, onUpdateSettings }: 
               ariaLabel="Filter by platform"
             />
           )}
-          <div className={styles.advancedFilterWrapper} ref={advancedRef}>
+          <div
+            className={styles.advancedFilterWrapper}
+            ref={advancedRef}
+            onBlur={(event) => {
+              if (event.relatedTarget && !advancedRef.current?.contains(event.relatedTarget)) {
+                setAdvancedOpen(false);
+              }
+            }}
+          >
             <button
               type="button"
               className={`${styles.advancedToggle} ${advancedFilterCount > 0 ? styles.active : ""}`}

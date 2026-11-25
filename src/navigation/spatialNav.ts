@@ -1,6 +1,6 @@
 export type Direction = "up" | "down" | "left" | "right";
 
-const SELECTOR = "[data-nav-item]";
+export const NAV_ITEM_SELECTOR = "[data-nav-item]";
 
 /** Finds the best next focus target in `container` relative to `current`,
  * using rectangle geometry — a simple directional nearest-neighbor search
@@ -11,7 +11,7 @@ export function findNextFocusTarget(
   container: ParentNode = document,
 ): HTMLElement | null {
   const currentRect = current.getBoundingClientRect();
-  const candidates = Array.from(container.querySelectorAll<HTMLElement>(SELECTOR)).filter(
+  const candidates = Array.from(container.querySelectorAll<HTMLElement>(NAV_ITEM_SELECTOR)).filter(
     (el) => el !== current && isVisible(el),
   );
 
@@ -27,6 +27,27 @@ export function findNextFocusTarget(
     }
   }
 
+  return best;
+}
+
+export function findNearestFocusTarget(
+  rect: DOMRect | null,
+  container: ParentNode = document,
+): HTMLElement | null {
+  const candidates = Array.from(container.querySelectorAll<HTMLElement>(NAV_ITEM_SELECTOR)).filter(isVisible);
+  if (!rect) return candidates[0] ?? null;
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let best: HTMLElement | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const r = candidate.getBoundingClientRect();
+    const distance = Math.hypot(r.left + r.width / 2 - cx, r.top + r.height / 2 - cy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
   return best;
 }
 

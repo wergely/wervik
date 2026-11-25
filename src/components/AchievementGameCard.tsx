@@ -18,7 +18,7 @@ export function AchievementGameCard({ entry, coverPath, onSelect }: AchievementG
   const { url, failed, ref: artworkRef } = useArtwork(coverPath, { lazy: true });
 
   return (
-    <button type="button" className={styles.card} data-nav-item onClick={onSelect} aria-label={entry.gameName}>
+    <button type="button" className={styles.card} data-nav-item data-nav-key={entry.gameId} onClick={onSelect} aria-label={entry.gameName}>
       <div className={styles.art} ref={artworkRef}>
         {url && !failed ? (
           <img src={url} alt="" draggable={false} loading="lazy" decoding="async" />

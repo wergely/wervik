@@ -21,7 +21,7 @@
   justify-content: center;
 }
 
-.playButton:focus-visible {
+.playButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -104,7 +104,7 @@
 }
 
 .nextButton:hover:not(:disabled),
-.nextButton:focus-visible {
+.nextButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
@@ -113,7 +113,7 @@
   opacity: 0.4;
 }
 
-.nextButton:focus-visible {
+.nextButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -126,7 +126,7 @@
   opacity: 0.4;
 }
 
-.volume:focus-visible {
+.volume:is(:focus-visible, [data-input="gamepad"] :focus) {
   outline: 2px solid var(--violet);
   outline-offset: 2px;
 }

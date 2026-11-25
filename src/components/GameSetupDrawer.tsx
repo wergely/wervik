@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Switch } from "./Switch";
 import type { EnvVar, GamescopeConfig, GameSetupInput, GameSetupStatus, MangoHudConfig, Upscaler } from "../types";
 import styles from "./GameSetupDrawer.module.css";
+import { NAV_ITEM_SELECTOR } from "../navigation/spatialNav";
 
 interface GameSetupDrawerProps {
   /** "Game Setup" for a Steam game, "Platform Setup" for a platform. */
@@ -184,7 +185,7 @@ export function GameSetupDrawer({
 
   useEffect(() => {
     const id = requestAnimationFrame(() => {
-      panelRef.current?.querySelector<HTMLElement>("[data-nav-item]")?.focus();
+      panelRef.current?.querySelector<HTMLElement>(NAV_ITEM_SELECTOR)?.focus();
     });
     return () => cancelAnimationFrame(id);
   }, []);

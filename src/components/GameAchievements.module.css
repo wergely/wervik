@@ -18,12 +18,12 @@
 }
 
 .backButton:hover,
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -203,7 +203,7 @@
   color: var(--text-secondary);
 }
 
-.search:focus-visible {
+.search:is(:focus-visible, [data-input="gamepad"] :focus) {
   outline: none;
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
@@ -236,7 +236,7 @@
   color: var(--text);
 }
 
-.filterChip:focus-visible {
+.filterChip:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -258,7 +258,7 @@
   font-size: 0.8rem;
 }
 
-.sortSelect:focus-visible {
+.sortSelect:is(:focus-visible, [data-input="gamepad"] :focus) {
   outline: none;
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
@@ -300,7 +300,7 @@
 }
 
 .refreshButton:hover:not(:disabled),
-.refreshButton:focus-visible {
+.refreshButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
   transform: rotate(45deg);
@@ -310,7 +310,7 @@
   opacity: 0.6;
 }
 
-.refreshButton:focus-visible {
+.refreshButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -424,12 +424,12 @@
 }
 
 .creditRow:hover,
-.creditRow:focus-visible {
+.creditRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: var(--surface-hover);
   border-color: var(--violet);
 }
 
-.creditRow:focus-visible {
+.creditRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -498,12 +498,12 @@
 }
 
 .recentCard:hover,
-.recentCard:focus-visible {
+.recentCard:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: var(--surface-hover);
   transform: translateY(-2px);
 }
 
-.recentCard:focus-visible {
+.recentCard:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -559,13 +559,13 @@
 }
 
 .card:hover,
-.card:focus-visible {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: var(--surface-hover);
   border-color: var(--violet);
   transform: translateY(-1px);
 }
 
-.card:focus-visible {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

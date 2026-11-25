@@ -26,6 +26,7 @@ export function SuggestedGameCard({ game: displayedSuggestion, reason, onSelect,
           type="button"
           className={styles.card}
           data-nav-item
+          data-nav-key={displayedSuggestion.id}
           onClick={() => onSelect(displayedSuggestion)}
           aria-label={`${displayedSuggestion.name}${displayedSuggestion.isInstalled ? "" : " — Not installed"}`}
         >
