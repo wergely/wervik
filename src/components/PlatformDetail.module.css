@@ -18,12 +18,12 @@
 }
 
 .backButton:hover,
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -153,7 +153,7 @@
 /* Focus is its own, temporary state — distinct from persistent selection,
    so controller navigation never reads "focused" as "this is now the
    default". */
-.emulatorCard:focus-visible {
+.emulatorCard:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
   border-color: var(--violet);
 }
@@ -271,11 +271,11 @@
 }
 
 .downloadButton:hover:not(:disabled),
-.downloadButton:focus-visible {
+.downloadButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: rgba(54, 217, 255, 0.1);
 }
 
-.downloadButton:focus-visible {
+.downloadButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -336,12 +336,12 @@
 }
 
 .setupButton:hover,
-.setupButton:focus-visible {
+.setupButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.setupButton:focus-visible {
+.setupButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

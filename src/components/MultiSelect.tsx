@@ -71,7 +71,14 @@ export function MultiSelect<T extends string>({
   }
 
   return (
-    <div className={styles.wrapper} ref={wrapperRef}>
+    <div
+      className={styles.wrapper}
+      ref={wrapperRef}
+      onBlur={(event) => {
+        // Close when controller/keyboard focus moves elsewhere; null means a click, handled above.
+        if (event.relatedTarget && !wrapperRef.current?.contains(event.relatedTarget)) setOpen(false);
+      }}
+    >
       <button
         ref={triggerRef}
         type="button"

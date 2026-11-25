@@ -19,12 +19,12 @@
 }
 
 .trigger:hover,
-.trigger:focus-visible {
+.trigger:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.trigger:focus-visible {
+.trigger:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -66,10 +66,10 @@
 }
 
 .item:hover,
-.item:focus-visible {
+.item:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: var(--bg);
 }
 
-.item:focus-visible {
+.item:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }

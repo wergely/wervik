@@ -133,7 +133,7 @@
 }
 
 .tab:hover,
-.tab:focus-visible {
+.tab:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
 }
 
@@ -182,12 +182,12 @@
 }
 
 .viewAllButton:hover,
-.viewAllButton:focus-visible {
+.viewAllButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--cyan);
   border-color: var(--violet);
 }
 
-.viewAllButton:focus-visible {
+.viewAllButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -300,11 +300,11 @@
 }
 
 .unlockRow:hover,
-.unlockRow:focus-visible {
+.unlockRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   background: var(--surface);
 }
 
-.unlockRow:focus-visible {
+.unlockRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -27,6 +27,32 @@ import { playConfirmSound, playSelectSound } from "./utils/sfx";
 
 type View = "home" | "detail" | "settings" | "platforms" | "platformDetail" | "achievements" | "gameAchievements";
 
+const NAV_ITEM = "[data-nav-item]";
+const NESTED_VIEWS: View[] = ["detail", "gameAchievements", "platformDetail"];
+
+interface FocusMemory {
+  key: string | null;
+  index: number;
+}
+
+function captureFocus(): FocusMemory | null {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !active.matches(NAV_ITEM)) return null;
+  const index = Array.from(document.querySelectorAll(NAV_ITEM)).indexOf(active);
+  return { key: active.dataset.navKey ?? null, index };
+}
+
+function restoreFocus(memory: FocusMemory): boolean {
+  const items = Array.from(document.querySelectorAll<HTMLElement>(NAV_ITEM));
+  // The same game can show up in several rows, so prefer the copy nearest its old position.
+  const keyed = memory.key ? items.filter((el) => el.dataset.navKey === memory.key) : [];
+  const target =
+    keyed.sort((a, b) => Math.abs(items.indexOf(a) - memory.index) - Math.abs(items.indexOf(b) - memory.index))[0] ??
+    items[memory.index];
+  target?.focus();
+  return Boolean(target);
+}
+
 export default function App() {
   const {
     status,
@@ -41,6 +67,7 @@ export default function App() {
   } = useLibrary();
   const { settings, update: updateSettings } = useSettings();
   const [view, setView] = useState<View>("home");
+  const focusMemory = useRef(new Map<View, FocusMemory>());
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [selectedPlatformKey, setSelectedPlatformKey] = useState<string | null>(null);
   // Where "Back" from the full achievements page should land — it's reachable
@@ -93,12 +120,24 @@ export default function App() {
     settings?.musicVolume ?? 0.35,
   );
 
+  // Going back to this view later puts focus back on whatever opened the next one.
+  function openView(next: View) {
+    const memory = captureFocus();
+    if (memory) focusMemory.current.set(view, memory);
+    setView(next);
+  }
+
+  function openSection(next: View) {
+    for (const nested of NESTED_VIEWS) focusMemory.current.delete(nested);
+    setView(next);
+  }
+
   const selectedGame = snapshot?.games.find((g) => g.id === selectedGameId) ?? null;
 
   function handleSelectGame(game: Game) {
     playSelectSound();
     setSelectedGameId(game.id);
-    setView("detail");
+    openView("detail");
     // Retro covers come from a background fetch that can be working
     // through a library thousands of ROMs deep (see `useArtworkProgress`);
     // a game the user is actually looking at right now shouldn't have to
@@ -113,12 +152,12 @@ export default function App() {
     playSelectSound();
     setSelectedGameId(game.id);
     setAchievementsOrigin(origin);
-    setView("gameAchievements");
+    openView("gameAchievements");
   }
 
   function handleSelectPlatform(platform: { key: string }) {
     setSelectedPlatformKey(platform.key);
-    setView("platformDetail");
+    openView("platformDetail");
   }
 
   async function handlePlay(game: Game, variantId?: string | null) {
@@ -182,17 +221,21 @@ export default function App() {
 
   // Seed keyboard/controller focus whenever the visible view changes, so
   // the first arrow press or D-pad nudge has somewhere to move from.
+  const showingWelcome = Boolean(settings && (!settings.onboardingCompleted || welcomeForced));
   useEffect(() => {
     const id = requestAnimationFrame(() => {
+      const memory = focusMemory.current.get(view);
+      focusMemory.current.delete(view);
+      if (memory && restoreFocus(memory)) return;
       if (
         document.activeElement === document.body ||
         document.activeElement === null
       ) {
-        document.querySelector<HTMLElement>("[data-nav-item]")?.focus();
+        document.querySelector<HTMLElement>(NAV_ITEM)?.focus();
       }
     });
     return () => cancelAnimationFrame(id);
-  }, [view, status]);
+  }, [view, status, showingWelcome]);
 
   useControllerNavigation({
     onBack: backOverride ?? (view === "home" ? undefined : handleBack),
@@ -237,6 +280,7 @@ export default function App() {
           <p>Wervik couldn't read your Steam library. Try rescanning.</p>
           <button
             type="button"
+            data-nav-item
             onClick={rescan}
             style={{
               background: "var(--gradient)",
@@ -254,7 +298,7 @@ export default function App() {
     );
   }
 
-  if (settings && (!settings.onboardingCompleted || welcomeForced)) {
+  if (showingWelcome && settings) {
     return (
       <div style={{ zoom: settings.uiScale, height: "100%" }}>
         <Welcome
@@ -283,10 +327,10 @@ export default function App() {
     <div style={{ zoom: settings?.uiScale ?? 1, height: "100%", display: "flex", flexDirection: "column" }}>
       <Header
         activeView={headerView}
-        onGoHome={() => setView("home")}
-        onOpenSettings={() => setView("settings")}
-        onOpenPlatforms={() => setView("platforms")}
-        onOpenAchievements={() => setView("achievements")}
+        onGoHome={() => openSection("home")}
+        onOpenSettings={() => openSection("settings")}
+        onOpenPlatforms={() => openSection("platforms")}
+        onOpenAchievements={() => openSection("achievements")}
         musicEnabled={Boolean(settings?.musicEnabled)}
         onToggleMusic={() => updateSettings({ musicEnabled: !settings?.musicEnabled })}
         onSkipTrack={musicControls.nextTrack}

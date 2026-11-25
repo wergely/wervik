@@ -80,7 +80,7 @@
   margin-left: 12px;
 }
 
-.closeButton:focus-visible {
+.closeButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -106,11 +106,11 @@
 }
 
 .backButton:hover,
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
 }
 
-.backButton:focus-visible {
+.backButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
   border-radius: 4px;
 }
@@ -202,9 +202,9 @@
   width: 90px;
 }
 
-.select:focus-visible,
-.numberInput:focus-visible,
-.textInput:focus-visible {
+.select:is(:focus-visible, [data-input="gamepad"] :focus),
+.numberInput:is(:focus-visible, [data-input="gamepad"] :focus),
+.textInput:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
 }
@@ -238,11 +238,11 @@
 }
 
 .navRow:hover,
-.navRow:focus-visible {
+.navRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--violet);
 }
 
-.navRow:focus-visible {
+.navRow:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
   border-radius: 4px;
 }
@@ -300,12 +300,12 @@
 }
 
 .resetButton:hover,
-.resetButton:focus-visible {
+.resetButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.resetButton:focus-visible {
+.resetButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -325,7 +325,7 @@
   opacity: 0.45;
 }
 
-.applyButton:focus-visible {
+.applyButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -347,7 +347,7 @@
   font-family: monospace;
 }
 
-.snippetInput:focus-visible {
+.snippetInput:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
   box-shadow: var(--shadow-focus);
 }
@@ -363,7 +363,7 @@
   font-size: 0.82rem;
 }
 
-.copyButton:focus-visible {
+.copyButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -380,11 +380,11 @@
 }
 
 .checkButton:hover,
-.checkButton:focus-visible {
+.checkButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   border-color: var(--violet);
 }
 
-.checkButton:focus-visible {
+.checkButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -433,12 +433,12 @@
 }
 
 .envRemoveButton:hover,
-.envRemoveButton:focus-visible {
+.envRemoveButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.envRemoveButton:focus-visible {
+.envRemoveButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -454,12 +454,12 @@
 }
 
 .addVarButton:hover,
-.addVarButton:focus-visible {
+.addVarButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
 }
 
-.addVarButton:focus-visible {
+.addVarButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

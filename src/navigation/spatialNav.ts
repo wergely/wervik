@@ -30,6 +30,27 @@ export function findNextFocusTarget(
   return best;
 }
 
+export function findNearestFocusTarget(
+  rect: DOMRect | null,
+  container: ParentNode = document,
+): HTMLElement | null {
+  const candidates = Array.from(container.querySelectorAll<HTMLElement>(SELECTOR)).filter(isVisible);
+  if (!rect) return candidates[0] ?? null;
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  let best: HTMLElement | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const r = candidate.getBoundingClientRect();
+    const distance = Math.hypot(r.left + r.width / 2 - cx, r.top + r.height / 2 - cy);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 function isVisible(el: HTMLElement): boolean {
   return el.offsetParent !== null || el.getClientRects().length > 0;
 }

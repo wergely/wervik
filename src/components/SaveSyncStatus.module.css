@@ -54,7 +54,7 @@
 }
 
 .syncButton:hover:not(:disabled),
-.syncButton:focus-visible {
+.syncButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
   border-color: var(--violet);
   transform: rotate(45deg);
@@ -64,7 +64,7 @@
   opacity: 0.6;
 }
 
-.syncButton:focus-visible {
+.syncButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 

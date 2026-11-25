@@ -56,15 +56,15 @@
 }
 
 .card:hover .art,
-.card:focus-visible .art {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) .art {
   border-color: var(--violet);
 }
 
 .card:hover,
-.card:focus-visible {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) {
   transform: scale(1.03);
 }
 
-.card:focus-visible .art {
+.card:is(:focus-visible, [data-input="gamepad"] :focus) .art {
   box-shadow: var(--shadow-focus);
 }

@@ -36,11 +36,11 @@
 }
 
 .navItem:hover,
-.navItem:focus-visible {
+.navItem:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--text);
 }
 
-.navItem:focus-visible {
+.navItem:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
@@ -49,7 +49,7 @@
 }
 
 .navItemActive:hover,
-.navItemActive:focus-visible {
+.navItemActive:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--cyan);
 }
 

@@ -68,12 +68,12 @@
 }
 
 .closeButton:hover,
-.closeButton:focus-visible {
+.closeButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   color: var(--cyan);
   border-color: var(--cyan);
 }
 
-.closeButton:focus-visible {
+.closeButton:is(:focus-visible, [data-input="gamepad"] :focus) {
   box-shadow: var(--shadow-focus);
 }
 
